@@ -1,0 +1,50 @@
+{
+  "name": "lumion",
+  "label": "Lumion / Twinmotion / D5 (flattened)",
+  "target_renderer": "lumion",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 2048,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Color / Albedo",
+      "notes": "sRGB. 2048 maximum, 1024 if the scene is heavy -- these engines are realtime and the texture budget is the whole cost." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Normal",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "8-bit on purpose: these engines compress it anyway, and the extra 8 bits buy nothing at walkthrough speed." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Roughness / Specular",
+      "mode": "roughness", "clamp": [0.1, 0.9],
+      "notes": "Clamped harder than the other presets: a flattened realtime material with a mirror patch or a pure-flat patch is the artefact a client notices." },
+
+    { "key": "height",   "file": "{material}_height_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Bump / Height",
+      "unit": "mm", "default_amplitude_mm": 2.0,
+      "notes": "8-bit, used as a bump only. The loaders in this class read a small amplitude and a 2048 map; a 16-bit 4k height file is discarded or downscaled on import anyway." }
+  ],
+
+  "material_defaults": {
+    "ao_strength": 0.0,
+    "displacement_mode": "bump"
+  },
+
+  "handoff": {
+    "snippet": "text",
+    "notes": [
+      "Flatten everything: these engines want albedo, normal and roughness and not much else. No packed maps, no 16-bit, no AO map -- the occlusion in these renderers is their own.",
+      "Height is a bump, not displacement: keep the amplitude small and check it in motion, not in a still.",
+      "2048 maximum. If the scene is heavy, 1024, and put the detail in the geometry instead."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "This preset writes the 8-bit height map the doc's matrix calls out as banding-prone. The recipe asks for it (these engines want small files), pack warns about it, and the warning is the point: it is a decision, not an oversight."
+  ]
+}

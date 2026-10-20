@@ -1,0 +1,51 @@
+{
+  "name": "unreal",
+  "label": "Unreal Engine 5",
+  "target_renderer": "unreal",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "albedo",   "file": "T_{material}_{map}_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Base Color",
+      "notes": "sRGB on. Unreal's T_ prefix convention is why this preset has its own filename template." },
+
+    { "key": "orm",      "file": "T_{material}_ORM_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Base Color -> ORM",
+      "notes": "sRGB OFF on import. R = Ambient Occlusion, G = Roughness, B = Metallic. Compression: Masks (not Default), and never let the editor 'optimise' this one." },
+
+    { "key": "normal",   "file": "T_{material}_normal_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Normal",
+      "orientation": "directx", "strength_default": 1.0,
+      "notes": "Unreal is -Y (DirectX), and this export flips the green channel to match. BC5 compression with recomputed Z; sRGB off." },
+
+    { "key": "emissive", "file": "T_{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Emissive Color",
+      "notes": "sRGB on, and the material's Emissive Intensity may exceed 1 -- keep the multiplier on the material, not in the file." }
+  ],
+
+  "material_defaults": {
+    "normal_space": "directx",
+    "orm_compression": "Masks",
+    "normal_compression": "BC5",
+    "texture_group": "World"
+  },
+
+  "handoff": {
+    "snippet": "unreal",
+    "notes": [
+      "Import the ORM with sRGB off and the Masks compression setting. Left at Default, the packed file is compressed as if it were colour and the roughness channel bands.",
+      "The normal map is written -Y for Unreal, so do not flip it again in the editor.",
+      "No height map in this preset: UE5 wants Nanite or WorldHeight for real displacement, and a 16-bit height PNG does nothing on its own. The height map is still in the masters folder if you want it.",
+      "Reuse a Material Instance for the values (roughness scale, normal strength) rather than duplicating the parent material per texture."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "Unreal wants the three data maps packed into one ORM texture, and -Y normals. Both differ from the generic preset, which is the whole reason presets exist."
+  ]
+}

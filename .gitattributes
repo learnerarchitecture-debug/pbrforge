@@ -1,0 +1,89 @@
+# Line endings, pinned explicitly.
+#
+# This file exists because of one concrete failure, not for tidiness.
+#
+# `deploy/entrypoint.sh` is the entrypoint of the Docker image. It starts with
+# `#!/bin/sh`. If Git checks it out with CRLF endings, the kernel reads the
+# interpreter line as `/bin/sh\r` and fails with:
+#
+#     /bin/sh^M: bad interpreter: No such file or directory
+#
+# That is not a warning and not a slow degradation. The container does not start,
+# and the error message says nothing about line endings. The same applies to
+# `pbrforge.service` (systemd parses it strictly) and to `Dockerfile` (`RUN`
+# continuations break). Windows' default `core.autocrlf=true` would do exactly
+# this on any machine that clones the repo before building the image, which is
+# every machine, because the build machine is Windows.
+#
+# The reverse also matters: `allow-firewall.cmd` has `goto` labels and a
+# sub-elevation call. cmd.exe is documented-flaky about LF-only batch files
+# around labels, so a batch file with LF endings can jump to the wrong line.
+# In a script whose job is to add firewall rules, that is not a cosmetic issue.
+#
+# So: everything is LF by default, and the Windows-only script types are CRLF.
+
+# Default: normalise to LF in the repository and on checkout.
+* text=auto eol=lf
+
+# --- CRLF: consumed by Windows tools that expect it -------------------------
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+
+# --- LF: consumed by Unix tools that require it ----------------------------
+*.sh      text eol=lf
+*.service text eol=lf
+*.rules   text eol=lf
+Dockerfile       text eol=lf
+*.Dockerfile     text eol=lf
+*.yml            text eol=lf
+*.yaml           text eol=lf
+*.toml           text eol=lf
+*.json           text eol=lf
+*.py             text eol=lf
+*.md             text eol=lf
+*.txt            text eol=lf
+*.iss            text eol=lf
+*.spec           text eol=lf
+*.html           text eol=lf
+.gitignore       text eol=lf
+.gitattributes   text eol=lf
+
+# --- Binary: never touch, never diff --------------------------------------
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.tif   binary
+*.tiff  binary
+*.exr   binary
+*.hdr   binary
+*.ico   binary
+*.ttf   binary
+*.woff  binary
+*.woff2 binary
+
+# --- Build output and binaries: no diffs, no filters ----------------------
+*.exe   binary
+*.dll   binary
+*.pyd   binary
+*.zip   binary
+*.7z    binary
+*.cubin binary
+
+# --- Generated material maps: text detection on these is always wrong and
+#     wastes time on every `git status` in a library folder ------------------
+*_albedo_*.png   binary
+*_normal_*.png   binary
+*_roughness_*.png binary
+*_metallic_*.png binary
+*_height_*.png   binary
+
+# --- Linguist: keep the GitHub language bar honest ------------------------
+# The single-file UI is most of the line count; without this the repo reads as
+# an HTML project rather than a Python one.
+ui/prototype.html linguist-vendored=false linguist-documentation=false
+docs/*.md         linguist-documentation
+deploy/*.ps1      linguist-language=PowerShell

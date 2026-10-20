@@ -1,0 +1,167 @@
+# PBRForge requirements
+# ===========================================================================
+#
+#  READ THIS FIRST, BECAUSE IT IS UNUSUAL:
+#
+#  PBRForge SHIPS WITH NO DEPENDENCIES AT ALL.
+#
+#  The server, the CLI, the configuration, the PNG codec, the cache, the
+#  certificate tooling, the discovery beacon and the self-test are all standard
+#  library. Nothing in this file is needed to run `pbrforge serve`, or to use
+#  the UI from any PC on the network, or to move materials through the server.
+#
+#  This is a deliberate architectural decision, not an accident of scale. See
+#  docs/ARCHITECTURE.md §2 for the reasoning; the short version is:
+#
+#    * the deliverable is a single-file .exe that runs on a machine with no
+#      Python, no pip and no compiler, and every dependency is a chance for that
+#      to fail on a machine you cannot debug;
+#    * ThreadingHTTPServer and argparse are genuinely sufficient for one user on
+#      a LAN, and an ASGI stack would add ~85 MB to the executable;
+#    * the heavy imaging stack is needed by the *pipeline stages*, which run when
+#      an image is processed, not by the server, which runs always.
+#
+#  So the layers below are installed separately, and `pbrforge doctor` reports
+#  which ones are present. Nothing here is mandatory for the server.
+#
+# ---------------------------------------------------------------------------
+#  Install, by layer:
+#
+#      pip install cryptography                       # TLS only   (~4 MB)
+#      pip install -r REQUIREMENTS.txt                # full imaging stack
+#
+#  Python: 3.11+ is required (tomllib, and modern typing syntax). 3.12 is what
+#  this is developed against. 3.13+ may lack wheels for parts of the imaging
+#  stack -- that affects the pipeline, never the server.
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# LAYER 0 -- the runtime.  NO DEPENDENCIES.  Do not add any.
+# ---------------------------------------------------------------------------
+#  http.server, socketserver, argparse, json, hmac, hashlib, secrets, zlib,
+#  struct, tomllib, ssl, threading, urllib, dataclasses, pathlib, shutil
+#
+#  If you find yourself wanting to add a dependency here, the question to ask is
+#  whether the pipeline stage that needs it can live behind a lazy import that
+#  only fires when an image is actually processed. Most can.
+
+
+# ---------------------------------------------------------------------------
+# LAYER 1 -- TLS.  Optional, ~4 MB, and the only dependency with a real UX cost.
+# ---------------------------------------------------------------------------
+#  Needed by: `pbrforge tls init` and `pbrforge tls trust`. Nothing else.
+#
+#  WHY IT IS WORTH INSTALLING: browsers only grant a secure context (WebGPU,
+#  clipboard, service workers) on https:// or on localhost. A LAN client on
+#  http://192.168.x.x silently loses WebGPU and falls back to WebGL2, with no
+#  error message. Installing this and running `pbrforge tls init` is what keeps
+#  the second PC as capable as the first. See DEPLOYMENT.md §5.
+#
+#  Without it the server still starts and serves over HTTP, and `doctor` says so.
+cryptography>=42           # local CA + leaf certificate generation
+
+
+# ---------------------------------------------------------------------------
+# LAYER 2 -- imaging.  NONE OF THIS IS INSTALLED FOR THE CURRENT RELEASE.
+# ---------------------------------------------------------------------------
+#  These are the dependencies of the pipeline stages (seamless, delight, derive,
+#  repack). Those stages are not implemented yet, so nothing imports any of
+#  this, and installing it today would be ~600 MB of unused wheels.
+#
+#  Kept pinned here so the versions are decided once rather than at the moment
+#  someone is in a hurry to get a stage working.
+#
+#  NOTE ON libvips: pyvips is only a binding. The libvips DLLs must be installed
+#  separately (see INSTALLATION.md step 3) and are not a pip package. If you
+#  cannot install libvips, set PBRFORGE_IMAGE_BACKEND=pillow and the
+#  Pillow/tifffile fallback is used at roughly 4x the memory cost.
+#
+# pyvips==2.2.3              # streaming image I/O; the reason 8k works at all
+# numpy>=1.26,<3             # arrays for everything
+# scipy>=1.12                # filters, morphology, FFT, distance transforms
+# opencv-contrib-python>=4.9 # inpainting (Telea/Navier-Stokes), seamlessClone, ximgproc
+# scikit-image>=0.23         # SSIM, exposure, registration, colour conversions
+# Pillow>=10.2               # fallback backend + simple format conversions
+# tifffile>=2024.5           # 16-bit TIFF and EXR-adjacent I/O
+# imageio>=2.34              # format glue
+# numba>=0.59                # jit for Poisson/Laplacian solvers and patch matching
+#
+# OpenEXR: prefer OpenImageIO over the python OpenEXR module on Windows.
+# OpenImageIO>=2.5           # uncomment if you have it; EXR write falls back to tifffile
+
+
+# ---------------------------------------------------------------------------
+# LAYER 3 -- AI.  Optional, off by default, and NOT needed to build anything.
+# ---------------------------------------------------------------------------
+#  See docs/AI_FEATURES.md for the licence review before enabling any of these.
+#  Every AI feature in this tool is a refinement layer: off by default, labelled
+#  in the output, pinned to a model version, and reversible. If a feature cannot
+#  be described that way, it does not belong in the tool.
+#
+#  CPU inference is enough for the small classifiers. GPU is only worth it for
+#  super-resolution and diffusion.
+#
+# onnxruntime>=1.18          # CPU inference for the small classifiers
+# torch>=2.3                 # GPU: pip install torch --index-url https://download.pytorch.org/whl/cu124
+# onnxruntime-gpu>=1.18      # swap in for onnxruntime when a GPU is present
+# diffusers>=0.30            # local diffusion for seam refinement / prompt-to-texture
+# transformers>=4.42         # CLIP/SigLIP classification and natural-language search
+# safetensors>=0.4           # model weight loading (never load pickle checkpoints)
+# rembg>=2.0                 # semantic matting for foliage and decals
+# realesrgan-ncnn-py         # tiling-aware super-resolution (or use ONNX directly)
+
+
+# ---------------------------------------------------------------------------
+# LAYER 4 -- dev and test.  Not needed to run or to build the installer.
+# ---------------------------------------------------------------------------
+#  `pbrforge selftest` is stdlib and is the test that matters for a deployment.
+#  pytest is for unit tests of pipeline stages, which do not exist yet.
+#
+# pytest>=8.2
+# pytest-cov>=5.0
+# ruff>=0.5
+# mypy>=1.10
+#
+# Build-machine only, for the packaged installer (not a runtime dependency):
+#   pip install pyinstaller>=6.6
+#
+# Inno Setup is NOT a pip package. Build machines need:
+#   winget install JRSoftware.InnoSetup
+
+
+# ===========================================================================
+#  DELIBERATELY REMOVED, and why.  Do not re-add these without reading it.
+# ===========================================================================
+#
+#  fastapi>=0.111             REMOVED. The server is stdlib ThreadingHTTPServer.
+#  uvicorn[standard]>=0.30    REMOVED. Nothing to serve; there is no ASGI app.
+#  python-multipart>=0.0.9    REMOVED. It exists for FastAPI's form parsing. The
+#                             stdlib parses urlencoded bodies and multipart
+#                             uploads directly, and the UI's upload path is a
+#                             few lines of read/parse.
+#  click>=8.1                 REMOVED. argparse is stdlib and covers the whole
+#                             command surface. click's conveniences do not pay
+#                             for a dependency inside the frozen executable.
+#  rich>=13.7                 REMOVED. `doctor` renders its own aligned output
+#                             with no dependency, which is also why it looks the
+#                             same in a .exe, in cmd.exe and in PowerShell.
+#  pydantic>=2.7              REMOVED. Config validation is a dataclass with a
+#                             __post_init__, which is faster to import and does
+#                             not vendor a Rust extension into the build.
+#  jsonschema>=4.22           REMOVED. Preset schemas are validated by the same
+#                             hand-written checks that also produce the error
+#                             messages, which jsonschema cannot.
+#  pyyaml>=6.0                KEPT AS A CONCEPT, NOT A DEPENDENCY. Project files
+#                             are `project.pbr.toml` -- TOML is stdlib-readable
+#                             via tomllib on 3.11+, YAML is not.
+#
+#  Combined effect: the frozen executable is ~11-14 MB instead of ~90-100 MB, it
+#  starts in well under a second, and it runs on a machine with no Python, no
+#  pip, no compiler and no Visual C++ redistributable beyond what Windows ships.
+#  That last property is the one that matters when it is being installed on the
+#  third PC and there is nobody to ask for help.
+#
+#  If a dependency is proposed for the runtime layer, the bar is: does the server
+#  fail without it, on a machine that is only opening a URL? If not, it belongs
+#  behind a lazy import in the pipeline.

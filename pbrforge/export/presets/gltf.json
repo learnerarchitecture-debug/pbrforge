@@ -1,0 +1,53 @@
+{
+  "name": "gltf",
+  "label": "glTF 2.0 / three.js",
+  "target_renderer": "gltf",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 4096,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_basecolor.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "pbrMetallicRoughness -> baseColorTexture",
+      "notes": "sRGB. Lowercase, spec-conventional names, and no resolution suffix: glTF assets are referenced by URI." },
+
+    { "key": "gltf",     "file": "{material}_metallicroughness.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "pbrMetallicRoughness -> metallicRoughnessTexture",
+      "notes": "G = Roughness, B = Metallic, R unused by the spec and written as 0 so it is never mistaken for a channel with meaning." },
+
+    { "key": "normal",   "file": "{material}_normal.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "normalTexture",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "glTF's normalTexture is +Y (OpenGL) by definition, so no flip and no negotiation." },
+
+    { "key": "ao",       "file": "{material}_occlusion.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "occlusionTexture",
+      "notes": "glTF names occlusion separately from the metallicRoughness texture, unlike Unity or Unreal: the R channel is the strength." },
+
+    { "key": "emissive", "file": "{material}_emissive.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "emissiveTexture",
+      "notes": "sRGB. The multiplier is emissiveFactor on the material, not in the file." }
+  ],
+
+  "material_defaults": {
+    "normal_space": "opengl",
+    "emissive_factor": 1.0,
+    "alpha_mode": "OPAQUE"
+  },
+
+  "handoff": {
+    "snippet": "gltf",
+    "notes": [
+      "The handoff file is a material fragment, not a complete glTF asset: register the images in the asset's own arrays and point the texture indices at them.",
+      "Tiling needs KHR_texture_transform on each texture, or the mesh's own UV scaling.",
+      "Normal scale lives on the material (normalTexture.scale), which is where the height amplitude's equivalent belongs."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "glTF splits occlusion from the metallic/roughness texture, so this preset writes both rather than a single packed ORM file."
+  ]
+}

@@ -1,0 +1,1414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PBRForge — UI Prototype</title>
+<!--
+  PBRForge UI prototype — the design reference for docs/UI_DESIGN.md.
+
+  This is NOT a mockup. On load it:
+    1. generates a real brick material procedurally (height field, 512x512),
+    2. derives a real tangent-space normal map from that height with a Sobel filter,
+    3. derives real AO (blurred-height occlusion) and roughness maps,
+    4. bakes a fake "photo" lighting gradient + shadow into an un-healed albedo,
+    5. uploads all six maps to WebGL and shades them with a real GGX PBR model.
+
+  Every slider therefore behaves like the shipped tool should:
+    - "Seam / de-light" blends raw photo -> healed albedo, so the seam and the baked
+      lighting appear and disappear for real, and the QC score is computed from the
+      actual wrap-boundary gradient of the textures (see QC_METRICS.md §1).
+    - The seam heat map measures the wrapped central difference of the mixed albedo,
+      exactly as specified in the pipeline docs.
+    - The green-channel flip genuinely flips the tangent-space normal.
+
+  No build step. No dependencies. Open in Chrome/Edge 113+ (WebGL2 or WebGL1).
+-->
+<style>
+/* ============================================================================
+   DESIGN TOKENS — these are the tokens in docs/UI_DESIGN.md §3. Lift verbatim.
+   ============================================================================ */
+:root{
+  --bg-base:#0B0D10; --bg-panel:#12151A; --bg-elevated:#191D24;
+  --bg-hover:#1F242C; --bg-active:#262C36; --bg-viewport:#08090B;
+
+  --border-subtle:#1C2129; --border:#242A33; --border-strong:#333B47;
+
+  --text-primary:#E6E9EF; --text-secondary:#A6AEBC;
+  --text-muted:#6E7787; --text-disabled:#464D59;
+
+  --accent:#E0A458; --accent-hover:#F0B468; --accent-active:#C88F45;
+  --accent-dim:rgba(224,164,88,.14); --accent-border:rgba(224,164,88,.35);
+
+  --ai:#A78BFA; --ai-dim:rgba(167,139,250,.14); --ai-border:rgba(167,139,250,.35);
+
+  --ok:#5FD08A; --ok-dim:rgba(95,208,138,.14);
+  --warn:#E8B65C; --warn-dim:rgba(232,182,92,.14);
+  --fail:#F2707A; --fail-dim:rgba(242,112,122,.14);
+  --info:#6BB8E8;
+
+  --map-albedo:#E8A0A0; --map-height:#B0B8C4; --map-normal:#8FB8E8;
+  --map-roughness:#D6C08A; --map-metallic:#C8C8D0; --map-ao:#9CBFA0;
+
+  --font-ui:"Inter","Segoe UI Variable",system-ui,-apple-system,sans-serif;
+  --font-num:"JetBrains Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
+
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;
+
+  --r-sm:4px; --r-md:6px; --r-lg:10px; --r-full:999px;
+
+  --shadow-pop:0 12px 32px rgba(0,0,0,.6),0 0 0 1px var(--border);
+  --shadow-focus:0 0 0 2px var(--bg-base),0 0 0 4px var(--accent);
+
+  --dur-instant:80ms; --dur-fast:140ms; --dur-base:220ms;
+  --ease-out:cubic-bezier(.22,1,.36,1);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg-base); color:var(--text-primary);
+  font:400 13px/18px var(--font-ui);
+  overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+::selection{background:var(--accent-dim)}
+.mono{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+
+/* ---------- App shell ---------------------------------------------------- */
+#app{display:grid;height:100vh;
+  grid-template-rows:56px 1fr 28px;
+  grid-template-columns:240px 1fr 300px;
+  grid-template-areas:"top top top" "left center right" "status status status";}
+
+/* ---------- Top bar ------------------------------------------------------ */
+#top{grid-area:top;display:flex;align-items:center;gap:var(--s-4);
+  padding:0 var(--s-4);background:var(--bg-panel);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:var(--s-2);font-weight:600;letter-spacing:-.01em}
+.brand .glyph{width:18px;height:18px;border-radius:var(--r-sm);
+  background:linear-gradient(135deg,var(--accent),var(--accent-active));
+  display:grid;place-items:center;font-size:11px;color:#1a1206;font-weight:800}
+.file{display:flex;align-items:center;gap:var(--s-2);color:var(--text-secondary);
+  padding:5px 10px;border-radius:var(--r-md);border:1px solid transparent}
+.file:hover{background:var(--bg-hover);border-color:var(--border)}
+.file b{color:var(--text-primary);font-weight:500}
+.spacer{flex:1}
+.pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:var(--r-full);
+  border:1px solid var(--border);background:var(--bg-elevated);font-size:12px;white-space:nowrap}
+.pill .k{color:var(--text-muted)}
+.btn{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--r-md);
+  background:var(--bg-elevated);border:1px solid var(--border);
+  transition:background var(--dur-instant),border-color var(--dur-instant)}
+.btn:hover{background:var(--bg-hover);border-color:var(--border-strong)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1206;font-weight:600}
+.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn:focus-visible{outline:none;box-shadow:var(--shadow-focus)}
+
+/* ---------- Columns ------------------------------------------------------ */
+#left,#right{background:var(--bg-panel);overflow-y:auto;overflow-x:hidden}
+#left{grid-area:left;border-right:1px solid var(--border)}
+#right{grid-area:right;border-left:1px solid var(--border)}
+#center{grid-area:center;display:flex;flex-direction:column;min-width:0;background:var(--bg-base)}
+
+.sect{padding:var(--s-3) var(--s-3) var(--s-2)}
+.sect+.sect{border-top:1px solid var(--border-subtle)}
+.cap{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-muted);margin-bottom:var(--s-2);display:flex;align-items:center;gap:6px}
+.cap .n{margin-left:auto;color:var(--text-disabled);letter-spacing:0;text-transform:none;font-size:10px}
+
+/* ---------- Map stack ---------------------------------------------------- */
+.maprow{display:flex;align-items:center;gap:var(--s-2);padding:6px;border-radius:var(--r-md);
+  cursor:pointer;border:1px solid transparent;transition:background var(--dur-instant)}
+.maprow:hover{background:var(--bg-hover)}
+.maprow.on{background:var(--bg-active);border-color:var(--border)}
+.maprow.solo{border-color:var(--accent-border);background:var(--accent-dim)}
+.maprow canvas{width:44px;height:44px;border-radius:var(--r-sm);flex:none;
+  image-rendering:auto;background:#000;border:1px solid var(--border-subtle)}
+.maprow .meta{flex:1;min-width:0}
+.maprow .nm{font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px}
+.maprow .badges{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap}
+.badge{font-size:9px;font-weight:600;letter-spacing:.03em;padding:1px 5px;border-radius:3px;
+  border:1px solid var(--border);color:var(--text-muted);background:var(--bg-elevated);
+  white-space:nowrap}
+.badge.data{color:var(--warn);border-color:rgba(232,182,92,.28);background:var(--warn-dim)}
+.badge.srgb{color:var(--ok);border-color:rgba(95,208,138,.28);background:var(--ok-dim)}
+.badge.b16{color:var(--info);border-color:rgba(107,184,232,.28)}
+.badge.ai{color:var(--ai);border-color:var(--ai-border);background:var(--ai-dim)}
+.eye{width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:3px;
+  color:var(--text-muted);font-size:11px}
+.eye:hover{background:var(--bg-elevated);color:var(--text-primary)}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+
+/* ---------- Viewport ----------------------------------------------------- */
+#vtools{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-3);
+  border-bottom:1px solid var(--border);background:var(--bg-panel);flex-wrap:wrap}
+.seg{display:flex;background:var(--bg-elevated);border:1px solid var(--border);
+  border-radius:var(--r-full);padding:2px}
+.seg button{padding:4px 11px;border-radius:var(--r-full);font-size:11px;font-weight:500;
+  color:var(--text-secondary);transition:background var(--dur-instant),color var(--dur-instant)}
+.seg button:hover{color:var(--text-primary)}
+.seg button.on{background:var(--bg-active);color:var(--text-primary)}
+.seg button.on.heat{background:var(--fail-dim);color:var(--fail)}
+.seg.alt button.on{background:var(--accent-dim);color:var(--accent)}
+#stage{position:relative;flex:1;min-height:0;background:var(--bg-viewport)}
+#gl{position:absolute;inset:0;width:100%;height:100%;display:block}
+.hud{position:absolute;pointer-events:none;font-size:11px;color:var(--text-muted)}
+.hud.tl{top:10px;left:12px}
+.hud.tr{top:10px;right:12px;text-align:right}
+.hud.bl{bottom:10px;left:12px}
+.hud b{color:var(--text-secondary);font-weight:500}
+.heatlegend{position:absolute;left:12px;bottom:34px;display:none;align-items:center;gap:8px;
+  font-size:10px;color:var(--text-muted);background:rgba(11,13,16,.8);
+  padding:5px 9px;border-radius:var(--r-md);border:1px solid var(--border)}
+.heatlegend.on{display:flex}
+.heatbar{width:110px;height:6px;border-radius:3px;
+  background:linear-gradient(90deg,#1a0b0d,#7a1f18,#ff4d38,#ffd9a0)}
+
+/* ---------- Right panel controls ---------------------------------------- */
+.ctl{padding:2px 0 10px}
+.ctl .row{display:flex;align-items:baseline;gap:var(--s-2);margin-bottom:2px}
+.ctl .lab{font-size:12px;color:var(--text-secondary);flex:1}
+.ctl .val{font-family:var(--font-num);font-size:11px;color:var(--text-primary)}
+.ctl input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;
+  background:transparent;cursor:grab}
+.ctl input[type=range]:active{cursor:grabbing}
+.ctl input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;
+  background:var(--bg-active)}
+.ctl input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
+  margin-top:-5px;border-radius:50%;background:var(--accent);border:2px solid var(--bg-panel);
+  transition:transform var(--dur-instant)}
+.ctl input[type=range]:hover::-webkit-slider-thumb{transform:scale(1.15)}
+.ctl input[type=range]:focus-visible{outline:none}
+.ctl input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:var(--shadow-focus)}
+.ctl.ai input[type=range]::-webkit-slider-thumb{background:var(--ai)}
+select{width:100%;padding:5px 8px;border-radius:var(--r-md);background:var(--bg-elevated);
+  border:1px solid var(--border);color:var(--text-primary);font:inherit;font-size:12px}
+select:focus-visible{outline:none;box-shadow:var(--shadow-focus)}
+.tog{display:flex;align-items:center;gap:var(--s-2);padding:5px 0;cursor:pointer;font-size:12px;
+  color:var(--text-secondary)}
+.tog:hover{color:var(--text-primary)}
+.sw{width:26px;height:15px;border-radius:var(--r-full);background:var(--bg-active);flex:none;
+  position:relative;transition:background var(--dur-fast)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
+  background:var(--text-muted);transition:transform var(--dur-fast),background var(--dur-fast)}
+.tog.on .sw{background:var(--accent-dim)}
+.tog.on .sw::after{transform:translateX(11px);background:var(--accent)}
+.tog.ai.on .sw{background:var(--ai-dim)}
+.tog.ai.on .sw::after{background:var(--ai)}
+.hint{font-size:10.5px;line-height:15px;color:var(--text-muted);margin-top:6px;
+  padding:7px 9px;border-radius:var(--r-md);background:var(--bg-elevated);
+  border-left:2px solid var(--border-strong)}
+.hint.warn{border-left-color:var(--warn);color:#cbb389}
+.hint.ai{border-left-color:var(--ai);color:#b6a2e8}
+
+/* ---------- Pipeline timeline ------------------------------------------- */
+.stage{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:var(--r-sm);
+  font-size:11.5px}
+.stage:hover{background:var(--bg-hover)}
+.stage .st{width:13px;text-align:center;font-size:10px;flex:none}
+.stage .t{margin-left:auto;font-family:var(--font-num);font-size:10px;color:var(--text-disabled)}
+.stage.done .st{color:var(--ok)}
+.stage.run  .st{color:var(--accent)}
+.stage.stale .st{color:var(--warn)}
+.stage.wait .st,.stage.wait .nm{color:var(--text-disabled)}
+.stage .nm{color:var(--text-secondary)}
+
+/* ---------- Status bar --------------------------------------------------- */
+#status{grid-area:status;display:flex;align-items:center;gap:var(--s-4);padding:0 var(--s-4);
+  background:var(--bg-panel);border-top:1px solid var(--border);font-size:11px;
+  color:var(--text-muted);overflow:hidden;white-space:nowrap}
+#status .w{color:var(--warn)}
+#status .sep{color:var(--border-strong)}
+
+/* ---------- Modal -------------------------------------------------------- */
+#modal{position:fixed;inset:0;background:rgba(6,7,9,.72);display:none;
+  place-items:center;z-index:50;backdrop-filter:blur(3px)}
+#modal.on{display:grid}
+.sheet{width:min(880px,92vw);max-height:84vh;background:var(--bg-panel);
+  border:1px solid var(--border-strong);border-radius:var(--r-lg);
+  box-shadow:var(--shadow-pop);display:flex;flex-direction:column;overflow:hidden}
+.sheet header{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-4);
+  border-bottom:1px solid var(--border)}
+.sheet header h2{font-size:15px;font-weight:600}
+.sheet .body{display:grid;grid-template-columns:1fr 320px;gap:var(--s-4);padding:var(--s-4);
+  overflow-y:auto}
+.tree{font-family:var(--font-num);font-size:11.5px;line-height:20px;color:var(--text-secondary);
+  background:var(--bg-viewport);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:var(--s-3);overflow-x:auto;white-space:pre}
+.tree .d{color:var(--info)}
+.tree .a{color:var(--map-albedo)} .tree .n{color:var(--map-normal)}
+.tree .r{color:var(--map-roughness)} .tree .m{color:var(--map-metallic)}
+.tree .h{color:var(--map-height)} .tree .x{color:var(--text-muted)}
+.sheet footer{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-4);
+  border-top:1px solid var(--border);background:var(--bg-elevated)}
+.handoff{font-size:11.5px;line-height:1.7;color:var(--text-secondary)}
+.handoff code{font-family:var(--font-num);font-size:11px;color:var(--accent)}
+.handoff .k{color:var(--text-muted)}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ==================== TOP BAR ==================== -->
+  <div id="top">
+    <div class="brand"><span class="glyph">◆</span> PBRForge</div>
+    <button class="file" title="Open material">▣ <b>brick_wall_red_01</b> <span style="color:var(--text-muted)">▾</span></button>
+    <div class="spacer"></div>
+    <div class="pill" id="pServer" title="Connection to the PBRForge server" style="display:none">
+      <span class="k" id="srvDot" style="color:var(--text-muted)">●</span> <span id="srvText">server</span>
+    </div>
+    <div class="pill"><span class="k">Looks like</span> floor brick · lattice 4×8 <span style="color:var(--text-muted)">(91%)</span></div>
+    <div class="pill" id="pPreset"><span class="k">Preset</span>
+      <select id="preset" style="width:auto;padding:1px 4px;background:none;border:none;font-size:12px">
+        <option>Enscape</option><option>V-Ray 6</option><option>Corona 11</option>
+        <option>Blender 4.x</option><option>Unreal 5 ORM</option><option>glTF 2.0</option>
+      </select></div>
+    <button class="btn primary" id="btnExport">Export ▾</button>
+  </div>
+
+  <!-- ==================== LEFT: MAP STACK + PIPELINE ==================== -->
+  <div id="left">
+    <div class="sect">
+      <div class="cap">Maps <span class="n" id="mapCount">6</span></div>
+      <div id="mapStack"></div>
+      <div class="hint" style="margin-top:10px">
+        Click a map to <b style="color:var(--text-secondary)">solo</b> it in the viewport.
+        <span style="color:var(--text-disabled)">Alt+click toggles visibility.</span>
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="cap">Source</div>
+      <div class="maprow"><div class="meta">
+        <div class="nm">▣ brick_wall_red.jpg</div>
+        <div class="badges"><span class="badge">4032×3024</span><span class="badge srgb">sRGB</span>
+        <span class="badge">8-bit</span><span class="badge">1.9 px/mm</span></div>
+      </div></div>
+    </div>
+
+    <div class="sect">
+      <div class="cap">Pipeline <span class="n" id="pipelineTime"></span></div>
+      <div id="pipeline"></div>
+    </div>
+
+    <div class="sect">
+      <div class="cap">History</div>
+      <div class="stage"><span class="st" style="color:var(--accent)">●</span>
+        <span class="nm">v004 · now</span><span class="t">current</span></div>
+      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
+        <span class="nm">v003 · 14:20</span><span class="t">seam 71→94</span></div>
+      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
+        <span class="nm">v002 · 14:18</span><span class="t">delight 0.55</span></div>
+      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
+        <span class="nm">v001 · 14:12</span><span class="t">import</span></div>
+    </div>
+  </div>
+
+  <!-- ==================== CENTER: VIEWPORT ==================== -->
+  <div id="center">
+    <div id="vtools">
+      <div class="seg" id="segMode">
+        <button data-mode="0" class="on">Sphere</button>
+        <button data-mode="1">Plane</button>
+        <button data-mode="2">Floor</button>
+      </div>
+      <div class="seg" id="segTile">
+        <button data-tile="1">1×</button>
+        <button data-tile="3">3×</button>
+        <button data-tile="8" class="on">8×</button>
+      </div>
+      <div class="seg" id="segExtra">
+        <button id="btnHeat">Seam heat</button>
+        <button id="btnFlip">Flip green</button>
+        <button id="btnAB">A | B</button>
+      </div>
+      <div class="spacer"></div>
+      <span style="font-size:11px;color:var(--text-muted)">Studio</span>
+      <select id="env" style="width:120px">
+        <option>Studio</option><option>Overcast</option><option>Warm interior</option>
+        <option>Night interior</option><option>Grazing sun</option>
+      </select>
+    </div>
+
+    <div id="stage">
+      <canvas id="gl"></canvas>
+      <div class="hud tl" id="hudTL"></div>
+      <div class="hud tr" id="hudTR"></div>
+      <div class="hud bl">1×—3×—8× · <b>[ ]</b> tile · <b>1 2 3</b> view · <b>G</b> flip · <b>H</b> heat</div>
+      <div class="heatlegend" id="heatLegend">
+        <span>0</span><div class="heatbar"></div><span>high</span>
+        <span style="color:var(--text-secondary);margin-left:4px">wrapped gradient across tile edge</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== RIGHT: CONTROLS ==================== -->
+  <div id="right">
+    <div class="sect">
+      <div class="cap">Seam &amp; de-light</div>
+
+      <div class="ctl">
+        <div class="row"><span class="lab">Seam healing / de-light</span>
+          <span class="val" id="vHeal">0.00</span></div>
+        <input type="range" id="heal" min="0" max="1" step="0.01" value="0">
+      </div>
+
+      <div class="ctl">
+        <div class="row"><span class="lab">Method</span></div>
+        <select id="method">
+          <option>Auto — lattice-snap (4×8)</option>
+          <option>Lattice snap (exact)</option>
+          <option>Offset + Poisson heal</option>
+          <option>Spectral (noise-like)</option>
+          <option>Quilting (structured)</option>
+          <option>AI refinement</option>
+        </select>
+      </div>
+
+      <button class="btn" id="btnRun" style="width:100%;justify-content:center;margin-top:10px">
+        ▶ Run seamless pipeline
+      </button>
+
+      <div class="hint warn" id="hintSeam">
+        Visible seam and baked lighting. This is what tiling a raw photograph looks like.
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="cap">Relief</div>
+      <div class="ctl">
+        <div class="row"><span class="lab">Normal strength</span><span class="val" id="vRelief">1.00</span></div>
+        <input type="range" id="relief" min="0" max="3" step="0.05" value="1">
+      </div>
+      <div class="ctl">
+        <div class="row"><span class="lab">Amplitude</span><span class="val" id="vAmp">3.0 mm</span></div>
+        <input type="range" id="amp" min="0" max="20" step="0.5" value="3">
+      </div>
+      <label class="tog" id="togDisp" ><span class="sw"></span> Show as displacement</label>
+    </div>
+
+    <div class="sect">
+      <div class="cap">Surface</div>
+      <div class="ctl">
+        <div class="row"><span class="lab">Roughness</span><span class="val" id="vRough">0.80</span></div>
+        <input type="range" id="rough" min="0" max="1" step="0.01" value="0.8">
+      </div>
+      <div class="ctl">
+        <div class="row"><span class="lab">Metallic</span><span class="val" id="vMetal">0.00</span></div>
+        <input type="range" id="metal" min="0" max="1" step="0.01" value="0">
+      </div>
+      <div class="ctl">
+        <div class="row"><span class="lab">AO</span><span class="val" id="vAo">0.60</span></div>
+        <input type="range" id="ao" min="0" max="1" step="0.01" value="0.6">
+      </div>
+      <div class="hint" id="hintMetal">
+        Metallic is indistinguishable from painted or dirty metal in a photograph.
+        Classified: dielectric (0.0), 82% confidence. <b style="color:var(--text-secondary)">Set it yourself.</b>
+      </div>
+    </div>
+
+    <div class="sect">
+      <div class="cap">Viewport</div>
+      <div class="ctl">
+        <div class="row"><span class="lab">Exposure</span><span class="val" id="vExp">0.0 EV</span></div>
+        <input type="range" id="exp" min="-3" max="3" step="0.1" value="0">
+      </div>
+      <label class="tog" id="togWire"><span class="sw"></span> Lattice overlay</label>
+    </div>
+
+    <div class="sect">
+      <div class="cap">AI <span class="n">off by default</span></div>
+      <label class="tog ai" id="togAI"><span class="sw"></span> Tiling-aware upscale 2×</label>
+      <label class="tog ai" id="togSeamAI"><span class="sw"></span> AI seam refinement</label>
+      <div class="hint ai">
+        Any AI step is modelled, seeded, and labelled. It never runs in the default export path,
+        and the classical result is always one click away.
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== STATUS BAR ==================== -->
+  <div id="status">
+    <span class="mono" id="stScore"></span>
+    <span class="sep">·</span>
+    <span>texel density <b class="mono" style="color:var(--text-secondary)">1.92 px/mm</b></span>
+    <span class="sep">·</span>
+    <span>albedo mean <b class="mono" style="color:var(--text-secondary)" id="stAlbedo">—</b></span>
+    <span class="sep">·</span>
+    <span class="mono" id="stRep"></span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="stWarn" class="w"></span>
+  </div>
+</div>
+
+<!-- ==================== EXPORT SHEET ==================== -->
+<div id="modal">
+  <div class="sheet">
+    <header>
+      <h2 id="mTitle">Export · Enscape</h2>
+      <div class="spacer" style="flex:1"></div>
+      <button class="btn" id="mClose">Close</button>
+    </header>
+    <div class="body">
+      <div class="tree" id="mTree"></div>
+      <div>
+        <div class="cap">Wire it into Enscape</div>
+        <div class="handoff">
+          <div><span class="k">Albedo</span> → Albedo <code>_albedo_4k.png</code></div>
+          <div><span class="k">Height</span> → Height <code>_height_4k.png</code></div>
+          <div><span class="k">Roughness</span> → Roughness <code>_roughness_4k.png</code></div>
+          <div><span class="k">Metallic</span> → Metallic <code>_metallic_4k.png</code></div>
+          <div style="margin-top:10px"><span class="k">AO</span> <span style="color:var(--warn)">
+            not wired</span> — Enscape generates its own occlusion.</div>
+          <div style="margin-top:10px"><span class="k">Resolution</span> 4096 max</div>
+          <div><span class="k">Amplitude</span> <span class="mono" id="mAmp">3.0 mm</span></div>
+          <div><span class="k">Module</span> 190 mm brick · tile UVW at integer multiples</div>
+          <div style="margin-top:10px"><span class="k">Seam</span> <span class="mono" id="mSeam">—</span></div>
+        </div>
+      </div>
+    </div>
+    <footer>
+      <span style="font-size:11.5px;color:var(--text-muted)" id="mSize"></span>
+      <div class="spacer" style="flex:1"></div>
+      <button class="btn">Copy as text</button>
+      <button class="btn primary" id="mGo">Export package</button>
+    </footer>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   1. TEXTURE GENERATION
+   Produces a genuine, periodic brick material plus a "raw photo" albedo that
+   has lighting baked in. Everything downstream is really derived from this.
+   ============================================================================ */
+
+const N = 512;                 // texture size (power of two -> mipmaps work)
+const ROWS = 6;                // brick courses per tile
+const COLS = 12;               // brick cells per row  (2 bricks per cell row)
+
+/* 32-bit integer hash -> [0,1). Math.imul keeps it in int32 range. */
+function hash2(x, y) {
+  let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+
+/* Value noise, periodic with an integer period. u,v in [0,1). */
+function vnoise(u, v, period) {
+  const x = u * period, y = v * period;
+  const i0 = Math.floor(x), j0 = Math.floor(y);
+  const fx = x - i0, fy = y - j0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const i1 = (i0 + 1) % period, j1 = (j0 + 1) % period;
+  const ii = ((i0 % period) + period) % period;
+  const jj = ((j0 % period) + period) % period;
+  const a = hash2(ii, jj), b = hash2(i1, jj), c = hash2(ii, j1), d = hash2(i1, j1);
+  const top = a + (b - a) * sx, bot = c + (d - c) * sx;
+  return top + (bot - top) * sy;
+}
+
+/* Fractal sum. Each octave doubles the (integer) period, so periodicity holds. */
+function fbm(u, v, base) {
+  let s = 0, amp = 0.5, p = base, norm = 0;
+  for (let o = 0; o < 4; o++) { s += amp * vnoise(u, v, p); norm += amp; p *= 2; amp *= 0.5; }
+  return s / norm;
+}
+
+const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+/* Periodic running-bond brick layout. Returns mortar mask, brick id, cell coords. */
+function brick(u, v) {
+  const y = v * ROWS, row = Math.floor(y), fy = y - row;
+  const off = (row % 2) * 0.5;
+  const x = u * COLS + off, col = Math.floor(x), fx = x - col;
+  const M = 0.055;
+  const mx = sstep(0, M, fx) * sstep(0, M, 1 - fx);
+  const my = sstep(0, M * 1.5, fy) * sstep(0, M * 1.5, 1 - fy);
+  const mortar = Math.min(mx, my);
+  const cc = ((col % COLS) + COLS) % COLS, rr = ((row % ROWS) + ROWS) % ROWS;
+  return { mortar, id: hash2(cc * 7 + 1, rr * 13 + 5) };
+}
+
+function buildMaterial() {
+  const NP = N * N;
+  const H  = new Float32Array(NP);          // height      0..1
+  const AR = new Uint8ClampedArray(NP * 4); // raw albedo  (photo, lighting baked in)
+  const AH = new Uint8ClampedArray(NP * 4); // healed albedo
+  const RG = new Uint8ClampedArray(NP * 4); // roughness
+  const ha = new Float32Array(NP);          // scratch for AO
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const u = x / N, v = y / N, i = y * N + x;
+      const b = brick(u, v), m = b.mortar, tint = b.id;
+
+      const mo = fbm(u, v, 8);        // large mottling
+      const gr = fbm(u, v, 64);       // fine grain
+      const mg = fbm(u, v, 96);       // mortar grain
+
+      /* ---- height: bricks proud, mortar recessed, plus surface grain ---- */
+      let h = 0.42 + 0.55 * m;
+      h += 0.045 * (mo - 0.5) * 2;
+      h += 0.030 * (gr - 0.5) * 2 * (0.4 + 0.6 * m);
+      h += 0.055 * (mg - 0.5) * 2 * (1 - m);
+      h += 0.020 * (tint - 0.5) * 2;
+      H[i] = Math.min(1, Math.max(0, h));
+
+      /* ---- albedo, flat-lit (the "healed" target) ---- */
+      const tv = (tint - 0.5) * 2;
+      const br = 0.60 + 0.16 * tv, bg = 0.29 + 0.075 * tv, bb = 0.235 + 0.055 * tv;
+      const mr = 0.70, mgc = 0.68, mb = 0.63;
+      const shade = (0.86 + 0.26 * mo) * (0.93 + 0.14 * gr);
+      let r = (mr + (br - mr) * m) * shade;
+      let g = (mgc + (bg - mgc) * m) * shade;
+      let bch = (mb + (bb - mb) * m) * shade;
+      /* warm/cool per-brick drift so the wall is not one colour */
+      r += 0.035 * tv * m; bch -= 0.022 * tv * m;
+
+      AH[i * 4] = r * 255; AH[i * 4 + 1] = g * 255; AH[i * 4 + 2] = bch * 255; AH[i * 4 + 3] = 255;
+
+      /* ---- "photo" lighting baked into the raw albedo ---- *
+       * A linear gradient across the frame, a soft cast shadow, and a corner
+       * falloff. Tiled, the gradient makes a visible lighting grid and the
+       * wrap produces a hard step -- exactly the problem this tool solves.   */
+      const dx = u - 0.62, dy = v - 0.55;
+      const shadow = 0.22 * (1 - sstep(0.10, 0.26, Math.hypot(dx, dy)));
+      const fall   = 0.06 * (1 - sstep(0.35, 0.85, Math.hypot(u - 0.5, v - 0.5)));
+      const light  = 0.70 + 0.44 * u + 0.10 * v - shadow - fall;
+      AR[i * 4] = r * 255 * light; AR[i * 4 + 1] = g * 255 * light;
+      AR[i * 4 + 2] = bch * 255 * light; AR[i * 4 + 3] = 255;
+
+      /* ---- roughness: mortar rougher, bricks vary, cavities rougher ---- */
+      let ro = 0.68 + 0.20 * (1 - m) + 0.10 * (gr - 0.5) * 2 + 0.06 * (tint - 0.5) * 2;
+      RG[i * 4] = RG[i * 4 + 1] = RG[i * 4 + 2] = Math.min(0.95, Math.max(0.05, ro)) * 255;
+      RG[i * 4 + 3] = 255;
+
+      ha[i] = h;
+    }
+  }
+
+  /* ---- AO: local height below the blurred neighbourhood = occluded ---- */
+  const rad = 10;
+  const blurA = wrapBlur(ha, N, rad), blurB = wrapBlur(ha, N, rad * 3);
+  const AO = new Uint8ClampedArray(NP * 4);
+  for (let i = 0; i < NP; i++) {
+    const occ = Math.max(0, blurA[i] - ha[i]) * 4.2 + Math.max(0, blurB[i] - ha[i]) * 2.4;
+    const a = Math.min(1, Math.max(0, 1 - occ * 0.9));
+    AO[i * 4] = AO[i * 4 + 1] = AO[i * 4 + 2] = a * 255; AO[i * 4 + 3] = 255;
+  }
+
+  return { H, AR, AH, RG, AO, normal: deriveNormal(H, N, 1.0) };
+}
+
+/* Separable box blur with wrap-around indices (tiling-safe). */
+function wrapBlur(src, n, r) {
+  const tmp = new Float32Array(n * n), out = new Float32Array(n * n), k = 2 * r + 1;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      let s = 0;
+      for (let d = -r; d <= r; d++) s += src[y * n + ((x + d + n) % n)];
+      tmp[y * n + x] = s / k;
+    }
+  }
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      let s = 0;
+      for (let d = -r; d <= r; d++) s += tmp[(((y + d) % n) + n) % n * n + x];
+      out[y * n + x] = s / k;
+    }
+  }
+  return out;
+}
+
+/* Real height -> normal derivation (Sobel, wrap-around). OpenGL +Y convention. */
+function deriveNormal(H, n, strength) {
+  const out = new Uint8ClampedArray(n * n * 4);
+  const at = (x, y) => H[(((y % n) + n) % n) * n + (((x % n) + n) % n)];
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const tl = at(x - 1, y - 1), t = at(x, y - 1), tr = at(x + 1, y - 1);
+      const l = at(x - 1, y), r = at(x + 1, y);
+      const bl = at(x - 1, y + 1), bo = at(x, y + 1), brr = at(x + 1, y + 1);
+      const dx = (tr + 2 * r + brr) - (tl + 2 * l + bl);
+      const dy = (bl + 2 * bo + brr) - (tl + 2 * t + tr);
+      const s = strength * 5.0;
+      let nx = -dx * s, ny = -dy * s, nz = 1;
+      const len = Math.hypot(nx, ny, nz); nx /= len; ny /= len; nz /= len;
+      const o = (y * n + x) * 4;
+      out[o] = (nx * 0.5 + 0.5) * 255;
+      out[o + 1] = (ny * 0.5 + 0.5) * 255;
+      out[o + 2] = (nz * 0.5 + 0.5) * 255;
+      out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/* ============================================================================
+   2. QC — the seam metric from docs/QC_METRICS.md §1
+
+   The wrap join is compared against the joins the texture already contains:
+
+       e = wrap / p95(interior join profile)      worst of the two axes, floor 1
+
+   The first version of this compared the wrap join against the MEAN of every
+   interior join. That is a units mismatch and it fails on exactly the textures
+   this tool exists for: a brick wall has a dozen sharp mortar joints and
+   hundreds of smooth pixels between them, so the mean gets diluted to almost
+   nothing and a flawless tile scored 30/100 -- the tool crying wolf about a
+   seam that does not exist. Measuring one join against the same kind of join is
+   the fix, and it is verified in pbrforge/core/synth.py, which must agree with
+   this function exactly.
+
+   The metric measures the WRAP only. A texture spliced from two mismatched
+   halves is broken in the interior and scores 100 here.
+   ============================================================================ */
+function joinProfile(lum, n, horizontal) {
+  /* interior[k] = mean over lines of |I[line,k+1] - I[line,k]|, k = 0..n-2 */
+  const interior = new Float64Array(n - 1);
+  for (let k = 0; k < n - 1; k++) {
+    let total = 0;
+    for (let line = 0; line < n; line++) {
+      const a = horizontal ? lum[line * n + k]     : lum[k * n + line];
+      const b = horizontal ? lum[line * n + k + 1] : lum[(k + 1) * n + line];
+      total += Math.abs(a - b);
+    }
+    interior[k] = total / n;
+  }
+  /* the wrap is one more join of the same family, measured the same way */
+  let wrap = 0;
+  for (let line = 0; line < n; line++) {
+    const a = horizontal ? lum[line * n + n - 1] : lum[(n - 1) * n + line];
+    const b = horizontal ? lum[line * n]         : lum[line];
+    wrap += Math.abs(a - b);
+  }
+  return { interior, wrap: wrap / n };
+}
+
+function seamRatio(rgba, n) {
+  const lum = new Float64Array(n * n);
+  for (let p = 0; p < n * n; p++) {
+    lum[p] = 0.2126 * rgba[p * 4] + 0.7152 * rgba[p * 4 + 1] + 0.0722 * rgba[p * 4 + 2];
+  }
+  let worst = 1;                      /* a join cannot be better than seamless */
+  for (const horizontal of [true, false]) {
+    const { interior, wrap } = joinProfile(lum, n, horizontal);
+    const sorted = interior.slice().sort();          /* typed arrays sort numerically */
+    const ref = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+    if (ref < 1e-6) continue;                        /* flat axis: nothing to compare */
+    worst = Math.max(worst, wrap / ref);
+  }
+  return worst;
+}
+
+/* 100 means the wrap is no worse than the texture's own strongest join;
+   50 means twice as strong; 25 means four times. No magic constants. */
+const ratioToScore = e => (e <= 1 ? 100 : Math.max(1, Math.round(100 / e)));
+
+/* ============================================================================
+   3. WEBGL PBR VIEWPORT
+   ============================================================================ */
+const VERT = `
+attribute vec2 aPos; varying vec2 vUV;
+void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
+
+const FRAG = `
+precision highp float;
+varying vec2 vUV;
+uniform vec2  uRes;
+uniform float uTiling, uHeal, uFlip, uHeat, uRelief, uRough, uMetal, uAo, uExposure, uWire;
+uniform int   uMode, uSolo;
+uniform int   uEnv;
+uniform sampler2D uAlbR, uAlbH, uNrm, uRgh, uAO, uHgt;
+
+const float PI = 3.14159265359;
+
+vec3 srgbToLin(vec3 c){ return pow(max(c,0.0), vec3(2.2)); }
+vec3 linToSrgb(vec3 c){ return pow(max(c,0.0), vec3(1.0/2.2)); }
+float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
+
+vec3 albedoAt(vec2 tu){
+  vec2 f = fract(tu);
+  vec3 a = srgbToLin(texture2D(uAlbR, f).rgb);
+  vec3 b = srgbToLin(texture2D(uAlbH, f).rgb);
+  return mix(a, b, uHeal);            /* the de-light / heal slider, for real */
+}
+
+float D_GGX(float NoH, float a){
+  float a2 = a*a;
+  float d  = NoH*NoH*(a2-1.0)+1.0;
+  return a2/max(PI*d*d, 1e-6);
+}
+float V_Smith(float NoV, float NoL, float a){
+  float a2 = a*a;
+  float gv = NoL*sqrt(NoV*NoV*(1.0-a2)+a2);
+  float gl = NoV*sqrt(NoL*NoL*(1.0-a2)+a2);
+  return 0.5/max(gv+gl, 1e-5);
+}
+vec3 F_Schlick(vec3 F0, float VoH){
+  return F0 + (1.0-F0)*pow(1.0-VoH, 5.0);
+}
+
+vec3 envLight(int i, vec3 n, vec3 r){
+  /* Five environments, hand-tuned for archviz rather than generic HDRI presets. */
+  if (i == 0) return vec3(1.0,0.97,0.92)*2.2*mix(0.6,1.0,0.5+0.5*n.y);   /* studio  */
+  if (i == 1) return vec3(0.72,0.78,0.86)*1.5*(0.5+0.5*n.y);            /* overcast*/
+  if (i == 2) return vec3(1.0,0.82,0.62)*1.7*(0.4+0.6*max(n.y,0.0));    /* warm    */
+  if (i == 3) return vec3(0.35,0.42,0.62)*0.7*(0.4+0.6*max(n.y,0.0));   /* night   */
+  return vec3(1.0,0.86,0.70)*2.6*max(n.y,0.0);                          /* grazing */
+}
+
+vec3 soloMap(vec2 tu, int m){
+  vec2 f = fract(tu);
+  if (m == 0) return texture2D(uAlbH, f).rgb;                       /* albedo (lit?)  */
+  if (m == 1) return vec3(texture2D(uHgt, f).r);                    /* height         */
+  if (m == 2) return texture2D(uNrm, f).rgb;                        /* normal         */
+  if (m == 3) return vec3(texture2D(uRgh, f).r);                    /* roughness      */
+  if (m == 4) return vec3(texture2D(uAO, f).r);                     /* ao             */
+  return vec3(0.5);
+}
+
+void main(){
+  vec2 p = (gl_FragCoord.xy*2.0 - uRes)/uRes.y;
+
+  vec3 ro, rd, Ng, T, B; vec2 uv; bool hit = true;
+  ro = vec3(0.0,0.0,3.1); T = vec3(1.0,0.0,0.0); B = vec3(0.0,1.0,0.0);
+  Ng = vec3(0.0,0.0,1.0); uv = vec2(0.5); rd = normalize(vec3(p,-1.0));
+
+  if (uMode == 0){                                  /* ---- sphere ---- */
+    ro = vec3(0.0,0.0,3.1);
+    rd = normalize(vec3(p,-2.6));
+    float b = dot(ro,rd), c = dot(ro,ro)-1.0;
+    float h = b*b-c;
+    if (h < 0.0){ hit = false; }
+    else {
+      vec3 pos = ro + rd*(-b - sqrt(h));
+      Ng = normalize(pos);
+      uv = vec2(atan(pos.z,pos.x)/(2.0*PI)+0.5, acos(clamp(pos.y,-1.0,1.0))/PI);
+      T  = normalize(cross(vec3(0.0,1.0,0.0), Ng));
+      B  = cross(Ng,T);
+    }
+  } else if (uMode == 1){                           /* ---- flat plane ---- */
+    ro = vec3(0.0,0.0,2.4);
+    rd = normalize(vec3(p,-2.6));
+    float t = -ro.z/rd.z;
+    vec3 pos = ro + rd*t;
+    Ng = vec3(0.0,0.0,1.0);
+    uv = pos.xy*0.55 + 0.5;
+    T = vec3(1.0,0.0,0.0); B = vec3(0.0,1.0,0.0);
+  } else {                                          /* ---- floor ---- */
+    ro = vec3(0.0,0.70,1.9);
+    rd = normalize(vec3(p.x*1.05,-0.55,-1.0));
+    if (rd.y >= -0.001){ hit = false; }
+    else {
+      float t = -ro.y/rd.y;
+      vec3 pos = ro + rd*t;
+      Ng = vec3(0.0,1.0,0.0);
+      uv = vec2(pos.x,pos.z)*0.42;
+      T = vec3(1.0,0.0,0.0); B = vec3(0.0,0.0,1.0);
+    }
+  }
+
+  /* ---- background: neutral gradient, deliberately boring ---- */
+  vec3 bg = mix(vec3(0.030,0.033,0.040), vec3(0.095,0.105,0.125),
+                gl_FragCoord.y/uRes.y);
+  bg *= 1.0 - 0.35*smoothstep(0.55,1.15,length(p*vec2(0.62,0.85)));
+  vec3 col = bg;
+
+  if (hit){
+    vec2 tu = uv*uTiling;
+    vec2 f  = fract(tu);
+
+    /* tangent-space normal from the derived map */
+    vec3 nt = texture2D(uNrm, f).xyz*2.0 - 1.0;
+    nt.y *= uFlip;
+    nt.xy *= uRelief;
+    nt = normalize(nt);
+    vec3 Nm = normalize(T*nt.x + B*nt.y + Ng*nt.z);
+
+    float rough = clamp(texture2D(uRgh, f).r * uRough, 0.04, 1.0);
+    float ao    = mix(1.0, texture2D(uAO, f).r, uAo);
+    vec3  alb   = albedoAt(tu);
+    float metal = uMetal;
+    float a = rough*rough;
+
+    vec3 V = -rd;
+    float NoV = max(dot(Nm,V), 1e-4);
+    vec3 F0 = mix(vec3(0.04), alb, metal);
+    vec3 kd = alb*(1.0-metal);
+
+    vec3 rad = envLight(uEnv, Nm, reflect(-V,Nm));
+    col = rad*kd*ao*0.28;                       /* rough ambient / indirect */
+
+    vec3  Ld[3];
+    vec3  Cl[3];
+    if (uEnv == 3){                             /* night interior: warm practicals */
+      Ld[0]=normalize(vec3( 0.55, 0.70, 0.55)); Cl[0]=vec3(1.00,0.80,0.55)*2.2;
+      Ld[1]=normalize(vec3(-0.70, 0.25, 0.60)); Cl[1]=vec3(0.35,0.50,0.85)*0.9;
+      Ld[2]=normalize(vec3( 0.10,-0.55,-0.60)); Cl[2]=vec3(0.45,0.42,0.40)*0.25;
+    } else if (uEnv == 4){                      /* grazing sun */
+      Ld[0]=normalize(vec3(-0.88, 0.30, 0.36)); Cl[0]=vec3(1.00,0.85,0.66)*3.4;
+      Ld[1]=normalize(vec3( 0.30, 0.70, 0.65)); Cl[1]=vec3(0.55,0.68,0.92)*0.85;
+      Ld[2]=normalize(vec3( 0.10,-0.50,-0.70)); Cl[2]=vec3(0.45,0.42,0.40)*0.30;
+    } else {                                    /* studio / overcast / warm */
+      Ld[0]=normalize(vec3( 0.55, 0.75, 0.55)); Cl[0]=vec3(1.00,0.96,0.90)*3.1;
+      Ld[1]=normalize(vec3(-0.75, 0.15, 0.55)); Cl[1]=vec3(0.45,0.60,0.90)*1.15;
+      Ld[2]=normalize(vec3( 0.10,-0.65,-0.70)); Cl[2]=vec3(0.50,0.48,0.44)*0.55;
+    }
+
+    for (int i=0;i<3;i++){
+      float NoL = max(dot(Nm, Ld[i]), 0.0);
+      if (NoL <= 0.0) continue;
+      vec3 Hv = normalize(Ld[i] + V);
+      float NoH = max(dot(Nm,Hv), 0.0);
+      float VoH = max(dot(V,Hv), 0.0);
+      vec3 F = F_Schlick(F0, VoH);
+      float spec = D_GGX(NoH,a) * V_Smith(NoV,NoL,a);
+      col += (kd/PI*ao + F*spec) * Cl[i] * NoL;
+    }
+
+    /* ---- lattice overlay: shows the detected repeat unit ---- */
+    if (uWire > 0.5){
+      float lx = smoothstep(0.985,1.0,abs(sin(f.x*PI)))*0.0;  /* placeholder */
+      float gx = min(f.x,1.0-f.x), gy = min(f.y,1.0-f.y);
+      float grid = 1.0 - smoothstep(0.0,0.010,min(gx,gy));
+      col = mix(col, vec3(0.88,0.64,0.34), grid*0.45);
+    }
+  }
+
+  /* ---- solo map view: bypass lighting entirely ---- */
+  if (hit && uSolo >= 0){
+    col = soloMap(uv*uTiling, uSolo);
+  }
+
+  /* ---- seam heat map: measured, not decorative ---- */
+  if (hit && uHeat > 0.5 && uSolo < 0){
+    float e = 0.006;
+    vec2 tu = uv*uTiling;
+    float d = abs(lum(albedoAt(tu+vec2(e,0.0))) - lum(albedoAt(tu-vec2(e,0.0))))
+            + abs(lum(albedoAt(tu+vec2(0.0,e))) - lum(albedoAt(tu-vec2(0.0,e))));
+    vec2 f = fract(tu);
+    float edge = 1.0 - smoothstep(0.0,0.06,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+    float hot = smoothstep(0.03,0.24,d)*(0.30+0.70*edge);
+    col = mix(col, mix(vec3(0.10,0.02,0.03), vec3(1.0,0.32,0.22), hot), hot*0.88);
+  }
+
+  col *= uExposure;
+  col = col/(col+1.0);                 /* Reinhard */
+  col = linToSrgb(col);
+  col *= 1.0 - 0.28*smoothstep(0.62,1.25,length(p*vec2(0.55,0.9)));
+  gl_FragColor = vec4(col,1.0);
+}`;
+
+/* --- WebGL bootstrap ------------------------------------------------------ */
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl', { antialias: true, alpha: false })
+        || canvas.getContext('experimental-webgl', { antialias: true, alpha: false });
+if (!gl) {
+  document.getElementById('stage').innerHTML =
+    '<div style="padding:32px;color:#F2707A;font:13px Inter,sans-serif">' +
+    'WebGL is unavailable in this browser. The prototype needs Chrome or Edge 113+. ' +
+    'The rest of the UI still works.</div>';
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+if (gl) {
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+}
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'aPos');
+
+const U = {};
+['uRes','uTiling','uHeal','uFlip','uHeat','uRelief','uRough','uMetal','uAo',
+ 'uExposure','uWire','uMode','uSolo','uEnv',
+ 'uAlbR','uAlbH','uNrm','uRgh','uAO','uHgt'].forEach(k => U[k] = gl.getUniformLocation(prog, k));
+
+/* --- upload the generated maps -------------------------------------------- */
+function makeTex(rgba, linear) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                new Uint8Array(rgba.buffer));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  return t;
+}
+function heightTex(H) {
+  const d = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) {
+    const v = H[i] * 255;
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
+  }
+  return makeTex(d);
+}
+function grayTex(src) {   /* packed single channel -> rgba */
+  const d = new Uint8Array(N * N * 4);
+  for (let i = 0; i < N * N; i++) {
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = src[i * 4]; d[i * 4 + 3] = 255;
+  }
+  return makeTex(d);
+}
+
+const M = buildMaterial();
+const TEX = {
+  albR: makeTex(M.AR), albH: makeTex(M.AH), nrm: makeTex(M.normal),
+  rgh: grayTex(M.RG), ao: grayTex(M.AO), hgt: heightTex(M.H),
+};
+
+/* --- QC numbers from the real data --------------------------------------- */
+const eRaw    = seamRatio(M.AR, N);          /* raw photo: big boundary step */
+const eHealed = seamRatio(M.AH, N);          /* healed   : continuous        */
+const SCORE_RAW = ratioToScore(eRaw), SCORE_HEALED = ratioToScore(eHealed);
+
+/* albedo means (sRGB-weighted) */
+const meanOf = a => { let s = 0; for (let i = 0; i < N * N; i++)
+  s += 0.2126*a[i*4] + 0.7152*a[i*4+1] + 0.0722*a[i*4+2]; return s/(N*N)/255; };
+const MEAN_RAW = meanOf(M.AR), MEAN_HEALED = meanOf(M.AH);
+
+/* --- render loop ---------------------------------------------------------- */
+let state = {
+  mode: 0, tile: 8, heal: 0, heat: 0, flip: 1, relief: 1, rough: 0.8,
+  metal: 0, ao: 0.6, exp: 0, wire: 0, env: 0, solo: -1,
+};
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+function draw() {
+  if (!gl) return;
+  resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const bind = (unit, tex) => {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+  };
+  bind(0, TEX.albR); bind(1, TEX.albH); bind(2, TEX.nrm);
+  bind(3, TEX.rgh);  bind(4, TEX.ao);   bind(5, TEX.hgt);
+
+  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform1f(U.uTiling, state.tile);
+  gl.uniform1f(U.uHeal, state.heal);
+  gl.uniform1f(U.uHeat, state.heat);
+  gl.uniform1f(U.uFlip, state.flip);
+  gl.uniform1f(U.uRelief, state.relief);
+  gl.uniform1f(U.uRough, state.rough);
+  gl.uniform1f(U.uMetal, state.metal);
+  gl.uniform1f(U.uAo, state.ao);
+  gl.uniform1f(U.uExposure, Math.pow(2, state.exp));
+  gl.uniform1f(U.uWire, state.wire);
+  gl.uniform1i(U.uMode, state.mode);
+  gl.uniform1i(U.uSolo, state.solo);
+  gl.uniform1i(U.uEnv, state.env);
+  gl.uniform1i(U.uAlbR, 0); gl.uniform1i(U.uAlbH, 1); gl.uniform1i(U.uNrm, 2);
+  gl.uniform1i(U.uRgh, 3);  gl.uniform1i(U.uAO, 4);   gl.uniform1i(U.uHgt, 5);
+
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+/* ============================================================================
+   4. UI
+   ============================================================================ */
+
+/* --- map stack ------------------------------------------------------------ */
+const MAPS = [
+  { key: 'albedo',    label: 'Albedo',    tex: 'albH', sel: 0, on: true,
+    badges: ['sRGB', '8-bit'], cls: 'srgb', color: '--map-albedo' },
+  { key: 'height',    label: 'Height',    tex: 'hgt',  sel: 1, on: true,
+    badges: ['data', '16-bit'], cls: 'data', color: '--map-height' },
+  { key: 'normal',    label: 'Normal',    tex: 'nrm',  sel: 2, on: true,
+    badges: ['data', '16-bit', '+Y'], cls: 'data', color: '--map-normal' },
+  { key: 'roughness', label: 'Roughness', tex: 'rgh',  sel: 3, on: true,
+    badges: ['data', '8-bit'], cls: 'data', color: '--map-roughness' },
+  { key: 'metallic',  label: 'Metallic',  tex: null,   sel: -1, on: true,
+    badges: ['data', '8-bit', 'flat 0.0'], cls: 'data', color: '--map-metallic' },
+  { key: 'ao',        label: 'AO',        tex: 'ao',   sel: 4, on: true,
+    badges: ['data', '8-bit'], cls: 'data', color: '--map-ao' },
+];
+
+function thumbFor(key) {
+  const c = document.createElement('canvas');
+  c.width = N; c.height = N;
+  const ctx = c.getContext('2d');
+  if (key === 'metallic') {   /* flat map: render it as flat grey, which is the honest picture */
+    ctx.fillStyle = 'rgb(30,30,32)'; ctx.fillRect(0, 0, N, N);
+    return c;
+  }
+  const src = key === 'albedo' ? M.AH : key === 'height' ? M.H
+            : key === 'normal' ? M.normal : key === 'roughness' ? M.RG : M.AO;
+  const img = ctx.createImageData(N, N);
+  if (key === 'height') {
+    for (let i = 0; i < N * N; i++) {
+      const v = src[i] * 255;
+      img.data[i*4] = img.data[i*4+1] = img.data[i*4+2] = v; img.data[i*4+3] = 255;
+    }
+  } else img.data.set(src);
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+const stackEl = document.getElementById('mapStack');
+MAPS.forEach((m, idx) => {
+  const row = document.createElement('div');
+  row.className = 'maprow';
+  row.innerHTML =
+    `<canvas width="${N}" height="${N}" style="width:44px;height:44px"></canvas>
+     <div class="meta">
+       <div class="nm"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
+       <div class="badges">${m.badges.map(b =>
+          `<span class="badge ${b === 'data' ? 'data' : b === 'sRGB' ? 'srgb'
+             : b === '16-bit' ? 'b16' : ''}">${b}</span>`).join('')}</div>
+     </div>
+     <span class="eye" title="toggle">◉</span>`;
+  row.querySelector('canvas').replaceWith(Object.assign(thumbFor(m.key), { style: 'width:44px;height:44px;border-radius:4px;border:1px solid var(--border-subtle);flex:none' }));
+  stackEl.appendChild(row);
+
+  const activate = (solo) => {
+    MAPS.forEach(o => o.soloOn = false);
+    if (solo) { m.soloOn = true; state.solo = m.sel; }
+    else state.solo = -1;
+    [...stackEl.children].forEach((c, i) => {
+      c.classList.toggle('solo', !!MAPS[i].soloOn);
+      c.classList.toggle('on', MAPS[i].soloOn);
+    });
+    updateQC();   /* the HUD states which map is soloed */
+    draw();
+  };
+  row.addEventListener('click', e => {
+    if (e.altKey) { m.on = !m.on; row.style.opacity = m.on ? 1 : .4; return; }
+    activate(!m.soloOn);
+  });
+});
+
+/* --- pipeline stages ------------------------------------------------------ */
+const STAGES = [
+  ['ingest',   0.4, 'done',  'sRGB 8-bit'],
+  ['preprocess',1.8, 'done',  'crop 3024²'],
+  ['lattice',  0.6, 'done',  'x4 y8 conf .91'],
+  ['seamless', 0.2, 'done',  'lattice-snap'],
+  ['delight',  0.9, 'done',  'mean restored'],
+  ['derive',   2.1, 'done',  '6 maps'],
+  ['pack',     0.6, 'done',  '5 files'],
+  ['qc',       0.3, 'stale', 'density warn'],
+];
+const pipeEl = document.getElementById('pipeline');
+STAGES.forEach(([nm, t, st, note]) => {
+  const sym = st === 'done' ? '✓' : st === 'stale' ? '!' : '○';
+  const d = document.createElement('div');
+  d.className = 'stage ' + st;
+  d.innerHTML = `<span class="st">${sym}</span><span class="nm">${nm}
+    <span style="color:var(--text-disabled)">· ${note}</span></span><span class="t">${t}s</span>`;
+  pipeEl.appendChild(d);
+});
+document.getElementById('pipelineTime').textContent =
+  STAGES.reduce((a, s) => a + s[1], 0).toFixed(1) + 's';
+
+/* --- controls ------------------------------------------------------------- */
+const $ = id => document.getElementById(id);
+function bindRange(id, key, fmt, after) {
+  const el = $(id), out = $('v' + id[0].toUpperCase() + id.slice(1));
+  const upd = () => {
+    state[key] = parseFloat(el.value);
+    if (out) out.textContent = fmt(state[key]);
+    if (after) after(state[key]);
+    draw();
+  };
+  el.addEventListener('input', upd); upd();
+}
+bindRange('heal',   'heal',   v => v.toFixed(2), updateQC);
+bindRange('relief', 'relief', v => v.toFixed(2));
+bindRange('amp',    'amp',    v => v.toFixed(1) + ' mm');
+bindRange('rough',  'rough',  v => v.toFixed(2));
+bindRange('metal',  'metal',  v => {
+  $('hintMetal').style.opacity = v > 0.02 ? '.45' : '1';
+  return v.toFixed(2);
+});
+bindRange('ao',     'ao',     v => v.toFixed(2));
+bindRange('exp',    'exp',    v => (v >= 0 ? '+' : '') + v.toFixed(1) + ' EV');
+
+$('method').addEventListener('change', e => {
+  const isAI = e.target.value.startsWith('AI');
+  const btn = $('btnRun');
+  $('method').blur();
+  animateHeal(isAI ? 0.98 : 1.0, 1100);
+  btn.textContent = isAI
+    ? '✓ AI refinement · seed 1234 · review it'
+    : '✓ seamless · ' + e.target.value.split(' —')[0];
+  setTimeout(() => { btn.textContent = '▶ Run seamless pipeline'; }, 2600);
+});
+$('env').addEventListener('change', e => { state.env = e.target.selectedIndex; draw(); });
+
+document.querySelectorAll('#segMode button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#segMode button').forEach(o => o.classList.remove('on'));
+  b.classList.add('on'); state.mode = +b.dataset.mode; draw();
+}));
+function setTile(t) {
+  state.tile = t;
+  document.querySelectorAll('#segTile button').forEach(o =>
+    o.classList.toggle('on', +o.dataset.tile === t));
+  draw(); updateQC();
+}
+document.querySelectorAll('#segTile button').forEach(b =>
+  b.addEventListener('click', () => setTile(+b.dataset.tile)));
+
+$('btnHeat').addEventListener('click', () => {
+  state.heat = state.heat > .5 ? 0 : 1;
+  $('btnHeat').classList.toggle('on', state.heat > .5);
+  $('heatLegend').classList.toggle('on', state.heat > .5);
+  draw();
+});
+$('btnFlip').addEventListener('click', () => {
+  state.flip = -state.flip;
+  $('btnFlip').classList.toggle('on', state.flip < 0);
+  /* updateQC() as well as draw(): the HUD line that names the convention
+     ("normal: OpenGL +Y" / "DirectX -Y") is written by updateQC. Without this
+     the viewport flips but the label keeps asserting the old convention, which
+     is worse than no label -- it is a confidently wrong one, and the whole
+     point of the flip is to be sure which convention is being exported. */
+  updateQC();
+  draw();
+});
+/* Apply the pipeline result IMMEDIATELY, then sweep as decoration.
+   A pipeline result must never depend on an animation frame or a timer --
+   both are throttled in background tabs, which would leave the UI showing a
+   stale score while the work is already done. The cosmetic sweep only runs
+   when the page is actually visible and is purely a visual affordance. */
+function applyHeal(v) {
+  state.heal = v; $('heal').value = v; syncHeal(); updateQC(); draw();
+}
+
+/* animateHeal -- the result is applied first and unconditionally; the sweep is
+   decoration on top of a UI that is already correct.
+
+   The previous version had a real bug worth recording. It set `state.heal = to`
+   and then called the animation's first frame *synchronously*. That first frame
+   measured k = (now - t0)/ms ~= 0 and computed v = from + (to-from)*0 = `from`,
+   so it immediately wrote the OLD value back over the new one. Clicking Run
+   showed 100 for one frame, then reverted to 47 for the entire animation and
+   only converged at the end. On a backgrounded tab, where requestAnimationFrame
+   is throttled, it could sit at 47 indefinitely -- the result was computed, and
+   the UI said nothing had happened.
+
+   Two rules now, and they are the whole fix:
+     1. Apply the final value first. Nothing below can leave it wrong.
+     2. The sweep is scheduled, never run inline, and its last frame lands
+        exactly on `to` rather than on whatever the clock happened to give. */
+function animateHeal(to, ms) {
+  const from = state.heal;
+  applyHeal(to);
+  if (ms <= 0 || Math.abs(to - from) < 1e-3) return;
+  if (document.visibilityState !== 'visible') return;
+  const t0 = performance.now();
+  const step = () => {
+    const k = Math.min(1, (performance.now() - t0) / ms);
+    applyHeal(k >= 1 ? to : from + (to - from) * (k * k * (3 - 2 * k)));
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+$('btnAB').addEventListener('click', () => {
+  /* A|B: raw photo <-> healed. An instant toggle -- this is a comparison, not a
+     transition, so there is nothing to animate and nothing to get stuck. */
+  animateHeal(state.heal > .5 ? 0 : 1, 0);
+});
+$('togWire').addEventListener('click', e => {
+  state.wire = state.wire > .5 ? 0 : 1;
+  e.currentTarget.classList.toggle('on', state.wire > .5); draw();
+});
+$('togDisp').addEventListener('click', e => {
+  e.currentTarget.classList.toggle('on');
+  state.relief = e.currentTarget.classList.contains('on') ? 2.2 : 1.0;
+  $('relief').value = state.relief; $('vRelief').textContent = state.relief.toFixed(2);
+  draw();
+});
+[['togAI'], ['togSeamAI']].forEach(([id]) => $(id).addEventListener('click', e => {
+  e.currentTarget.classList.toggle('on');
+}));
+
+$('btnRun').addEventListener('click', () => {
+  const btn = $('btnRun');
+  /* Result lands immediately; the sweep is decoration and the label timing is
+     cosmetic. Neither can leave the UI in a wrong or stuck state. */
+  animateHeal(1.0, 1100);
+  btn.textContent = '✓ seamless · lattice-snap (exact)';
+  setTimeout(() => { btn.textContent = '▶ Run seamless pipeline'; }, 2600);
+});
+
+function syncHeal() { $('vHeal').textContent = state.heal.toFixed(2); }
+
+/* --- QC readout, computed from the real textures -------------------------- */
+function updateQC() {
+  const h = state.heal;
+  const e = eRaw + (eHealed - eRaw) * h;              /* boundary error scales with heal */
+  const score = ratioToScore(e);
+  const mean  = MEAN_RAW + (MEAN_HEALED - MEAN_RAW) * h;
+
+  const cls = score >= 90 ? 'var(--ok)' : score >= 75 ? 'var(--warn)' : 'var(--fail)';
+  $('stScore').innerHTML = `<span style="color:${cls}">●</span> seam <b style="color:${cls}">${score}</b>`;
+  $('stAlbedo').textContent = mean.toFixed(2);
+
+  /* repetition is a function of tiling count: more tiles = more visible period */
+  const rep = (0.14 + 0.045 * state.tile) * (1 - 0.35 * h);
+  $('stRep').innerHTML = `repetition at ${state.tile}× ` +
+    `<b style="color:${rep > 0.45 ? 'var(--warn)' : 'var(--text-secondary)'}">${rep.toFixed(2)}</b>`;
+
+  const warn = score < 85
+    ? 'visible seam at the tile boundary — run the seamless pipeline'
+    : 'texel density 1.92 px/mm — low for close viewing';
+  $('stWarn').textContent = '⚠ ' + warn;
+
+  $('hintSeam').className = 'hint' + (score < 85 ? ' warn' : '');
+  $('hintSeam').innerHTML = score < 85
+    ? `Visible seam and baked lighting. The wrap join is <b>${e.toFixed(1)}×</b> the strength of the sharpest join already in the texture — a seam score of <b>${score}</b>.`
+    : `Seam healed. The wrap join is <b>${e.toFixed(2)}×</b> the sharpest join already in the texture, so there is nothing left to see at the boundary — a seam score of <b>${score}</b>. De-lighting also restored the albedo mean to <b>${mean.toFixed(2)}</b>.`;
+
+  $('hudTR').innerHTML =
+    `seam <b style="color:${cls}">${score}</b> · albedo <b>${mean.toFixed(2)}</b><br>` +
+    `${state.tile}× ${state.tile} tiling · ${['sphere','plane','floor'][state.mode]}` +
+    (state.flip < 0 ? '<br>normal: <b>DirectX −Y</b>' : '<br>normal: <b>OpenGL +Y</b>');
+  $('hudTL').innerHTML = state.solo >= 0
+    ? `<b style="color:var(--accent)">solo: ${MAPS.find(m => m.sel === state.solo).label}</b>` +
+      `<br><span style="color:var(--text-disabled)">click again to exit</span>`
+    : `brick_wall_red_01 · 4096² target`;
+}
+
+/* --- export sheet --------------------------------------------------------- */
+const PRESET_FILES = {
+  0: ['albedo_4k.png', 'height_4k.png', 'normal_4k.png', 'roughness_4k.png', 'metallic_4k.png'],
+  1: ['albedo_4k.png', 'height_4k.exr', 'normal_4k.png', 'roughness_4k.png', 'metallic_4k.png', 'ao_4k.png'],
+  4: ['albedo_4k.png', 'normal_4k.png', 'ORM_4k.png'],
+};
+function openExport() {
+  const p = $('preset').selectedIndex;
+  const files = PRESET_FILES[p] || PRESET_FILES[0];
+  $('mTitle').textContent = 'Export · ' + $('preset').value;
+  $('mAmp').textContent = state.amp.toFixed(1) + ' mm';
+  $('mSeam').textContent = ratioToScore(eRaw + (eHealed - eRaw) * state.heal);
+
+  const cls = f => f.includes('albedo') ? 'a' : f.includes('normal') ? 'n'
+    : f.includes('roughness') ? 'r' : f.includes('metallic') ? 'm'
+    : f.includes('height') ? 'h' : 'x';
+  const px = p === 4 ? 'T_' : '';
+  $('mTree').innerHTML =
+`<span class="d">export/enscape/</span>
+├── <span class="d">maps/</span>
+${files.map(f => `│   ├── <span class="${cls(f)}">${px}brick_wall_red_${f}</span>`).join('\n')}
+├── <span class="d">preview/</span>
+│   ├── sphere.png
+│   ├── plane_3x3.png
+│   └── roughness_sweep.png
+├── <span class="x">material.json</span>      <span class="x">pipeline_hash, params, seed, qc</span>
+├── <span class="x">README.txt</span>         <span class="x">slot assignments for Enscape</span>
+└── <span class="x">import/enscape/import-guide.html</span>`;
+  const mb = (files.length * (p === 4 ? 48 : 88) + 12);
+  $('mSize').textContent = `${files.length} maps + 3 previews + sidecar · ~${mb} MB uncompressed`;
+  $('modal').classList.add('on');
+}
+$('btnExport').addEventListener('click', openExport);
+$('mClose').addEventListener('click', () => $('modal').classList.remove('on'));
+$('mGo').addEventListener('click', () => {
+  const b = $('mGo'); b.textContent = '● writing…';
+  setTimeout(() => { b.textContent = '✓ exported'; setTimeout(() => {
+    $('modal').classList.remove('on'); b.textContent = 'Export package'; }, 900); }, 1100);
+});
+$('modal').addEventListener('click', e => { if (e.target.id === 'modal')
+  $('modal').classList.remove('on'); });
+
+/* --- keyboard ------------------------------------------------------------- */
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if (k === '1' || k === '2' || k === '3') {
+    const b = document.querySelector(`#segMode button[data-mode="${+k - 1}"]`); b && b.click();
+  } else if (k === '[' || k === ']') {
+    const order = [1, 3, 8], i = order.indexOf(state.tile);
+    setTile(order[Math.max(0, Math.min(2, i + (k === ']' ? 1 : -1)))]);
+  } else if (k === 'g') $('btnFlip').click();
+  else if (k === 'h') $('btnHeat').click();
+  else if (k === 'd') $('btnAB').click();
+  else if (k === 'escape') $('modal').classList.remove('on');
+});
+
+/* --- go ------------------------------------------------------------------- */
+addEventListener('resize', draw);
+updateQC();
+draw();
+setTimeout(() => $('btnRun').focus(), 300);
+
+/* ============================================================================
+   SERVER LINK
+
+   When this page is served by `pbrforge serve`, say so in the top bar. The point
+   is not decoration: the whole multi-PC story is "one machine runs the server,
+   the others just open the URL", and the first question on a second PC is
+   whether it actually reached the server or is looking at a cached page.
+
+   Opened as a plain file (file://), there is no server and no API, so the badge
+   stays hidden rather than showing an error the user cannot act on.
+   ============================================================================ */
+(function serverLink(){
+  if (!/^https?:$/.test(location.protocol)) return;
+  const pill = $('pServer'), dot = $('srvDot'), text = $('srvText');
+  if (!pill) return;
+  pill.style.display = '';
+
+  const paint = (colour, label, title) => {
+    dot.style.color = colour; text.textContent = label;
+    pill.title = title;
+  };
+
+  fetch('api/health', { headers: { 'Accept': 'application/json' } })
+    .then(r => {
+      if (r.status === 401) {
+        /* Served by the server, but this browser has not paired. The server
+           sends every unpaired page to /pair, so reaching this line means
+           something is answering without a session -- say so plainly. */
+        paint('var(--warn)', 'not paired', 'This page came from a PBRForge server but this browser has no session. Open /pair and enter the pairing code.');
+        return null;
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(d => {
+      if (!d) return;
+      const secure = location.protocol === 'https:';
+      const gpu = secure ? 'WebGPU available' : 'secure origin required for WebGPU; this page is on ' + location.protocol;
+      paint('var(--ok)', d.host + ' · v' + d.version,
+            `${d.app} ${d.version} on ${d.host} (${d.platform}, Python ${d.python})\n` +
+            `library  ${d.library}\n` +
+            `uptime   ${d.uptime_s}s\n` +
+            `${gpu}`);
+    })
+    .catch(() => paint('var(--text-muted)', 'offline',
+                       'No PBRForge server answered. The page still works; results are not shared.'));
+})();
+</script>
+</body>
+</html>

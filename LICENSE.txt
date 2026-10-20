@@ -1,0 +1,53 @@
+PBRForge — Personal Use License
+================================
+
+Copyright (c) 2026  <your name>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+NOTES FOR PERSONAL USE
+-------------------------------------------------------------------------------
+
+1. IMAGES YOU PROCESS
+   Material packs produced by this software are derivative works of the source
+   images you feed it. If those images came from a bought asset pack, its EULA
+   still applies to the output. If they came from your own camera, the output is
+   yours. Keep the `source` field in material.json populated so you can always
+   answer "where did this come from?" months later.
+
+2. AI MODEL WEIGHTS
+   Any optional AI models you download (checkpoints under models/) carry their
+   own licences, which may be stricter than this one. Those are listed in
+   models/manifest.json with their licence and source URL. Check them before
+   using AI-assisted output in paid work — especially for diffusion-based
+   features, where training-data provenance is often unclear.
+
+3. THIRD-PARTY LIBRARIES
+   libvips is LGPL-2.1 (used as a separate process / dynamic link — do not
+   statically link it into a distributed binary). OpenCV is Apache-2.0.
+   scikit-image, NumPy and SciPy are BSD. numba is BSD. torch is BSD.
+   OpenImageIO is Apache-2.0. Do not add FFmpeg in a GPL configuration if you
+   ever distribute a build.
+
+4. IF YOU LATER DECIDE TO SHIP THIS
+   Before any distribution: audit licences, strip the personal defaults, add
+   telemetry consent, and re-read the "business risks" section of the original
+   scoping document. As a personal tool it costs nothing; as a product the
+   support and legal surface is the real work.

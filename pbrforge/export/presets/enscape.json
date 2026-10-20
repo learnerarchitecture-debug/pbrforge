@@ -1,0 +1,63 @@
+{
+  "name": "enscape",
+  "label": "Enscape",
+  "target_renderer": "enscape",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 4096,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Albedo (Color)",
+      "notes": "sRGB. Keep to 4k: Enscape is a realtime engine and the texture budget is the framerate." },
+
+    { "key": "height",   "file": "{material}_height_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Height",
+      "unit": "mm", "default_amplitude_mm": 2.0,
+      "notes": "Enscape's material model prefers height/bump over a normal map. Modest relief: heavy height reads as noise at realtime framerates. Bump by default; 'use as displacement' only where the host geometry supports it." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Roughness",
+      "mode": "roughness", "clamp": [0.08, 0.95],
+      "notes": "Near-zero roughness in Enscape produces smeared reflections that look like a bug, which is why this preset clamps the low end at 0.08 rather than 0.05." },
+
+    { "key": "metallic", "file": "{material}_metallic_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Metallic",
+      "notes": "Near-binary. Enscape interpolates metallic smoothly, and mid values look like wet plastic." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Normal (optional)",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "Not Enscape's first choice -- the height map is. Exported because every other target in a project wants it." },
+
+    { "key": "ao",       "file": "{material}_ao_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "DO NOT WIRE",
+      "notes": "Enscape computes its own screen-space occlusion. Adding an AO map produces dark-in-the-wrong-places. Exported for other renderers and for masking." },
+
+    { "key": "emissive", "file": "{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Emissive",
+      "notes": "Only where the material genuinely emits." }
+  ],
+
+  "material_defaults": {
+    "ao_strength": 0.0,
+    "displacement_mode": "bump"
+  },
+
+  "handoff": {
+    "snippet": "text",
+    "notes": [
+      "Enscape: albedo -> Albedo, height -> Height, roughness -> Roughness, metallic -> Metallic. Leave every data map's colour space set to linear/non-colour. Do not add the AO map -- Enscape generates its own ambient occlusion.",
+      "Amplitude: about 2 mm for a tile, 4 mm for brick, and check it against the tile's real size.",
+      "Material packages (.matpkg) are undocumented. This export is the PNG set plus this sheet, not a .matpkg."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "Enscape has no material scripting, so the handoff is a wiring sheet rather than a script.",
+    "If your project is large, render at 2048 rather than 4096: the difference is invisible at walkthrough speed and the memory is not."
+  ]
+}

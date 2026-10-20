@@ -1,0 +1,66 @@
+{
+  "name": "vray-6",
+  "label": "V-Ray 6 (3ds Max)",
+  "target_renderer": "vray",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Diffuse -> Bitmap",
+      "notes": "Bitmap gamma Override 1.0: the file is already sRGB-encoded, and letting Max apply its default 2.2 a second time is the classic washed-out V-Ray material." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Bump -> Normal Map",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "Green +Y (OpenGL) in Max; verify per host, since the same material in SketchUp or Rhino can be the other convention. 16-bit prevents banding on large flat surfaces." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Reflection -> Roughness",
+      "mode": "roughness", "clamp": [0.05, 0.95],
+      "notes": "Gamma 1.0. Modern V-Ray takes roughness directly; the legacy Glossiness input wants a curve, not a plain inversion, and this preset does not ship that curve." },
+
+    { "key": "metallic", "file": "{material}_metallic_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Metalness",
+      "notes": "Gamma 1.0. Non-metals stay at 0." },
+
+    { "key": "height",   "file": "{material}_height_{res}.tif",
+      "space": "data",  "bit": 16, "format": "tiff", "slot": "Displacement",
+      "unit": "mm", "default_amplitude_mm": 3.0,
+      "notes": "2D displacement, amount in mm, mid-level 0.5. TIFF rather than the schema example's EXR because this build writes PNG and TIFF; the sample depth is the same 16 bits." },
+
+    { "key": "ao",       "file": "{material}_ao_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "not wired by default",
+      "notes": "Use as a mask: V-Ray has its own ambient occlusion, and adding a baked one on top doubles it." },
+
+    { "key": "emissive", "file": "{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Self-Illumination",
+      "notes": "sRGB. The HDR multiplier belongs on the material, not in an 8-bit file." }
+  ],
+
+  "material_defaults": {
+    "ior": 1.52,
+    "reflection_glossiness_mode": "roughness",
+    "displacement_mode": "2d",
+    "displacement_midlevel": 0.5
+  },
+
+  "handoff": {
+    "snippet": "maxscript",
+    "notes": [
+      "Use VRayTriplanar on curved or inconsistently UV'd geometry. This one note prevents the most visible class of wall artefacts.",
+      "Set Bitmap gamma to Override 1.0 on every data map -- roughness, metallic, height, normal. Only the albedo should be read as colour.",
+      "VRayDisplacementMod: 2D, amount 3.0 mm, midlevel 0.5. Raise the amount against the tile's real size if the mortar should read deeper.",
+      "VRayMultiSubTex can pack several of these into one bitmap to cut VRAM; if you do it, the maps stop being individually editable."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "Written for V-Ray 5/6/7 on 3ds Max. The same files work in the SketchUp, Rhino and Blender integrations, where the slot names differ but the colour spaces do not.",
+    "IOR by material: 1.52 for most dielectrics, 1.55-1.6 for polished marble and granite, 1.76 for glass."
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "name": "unity",
+  "label": "Unity HDRP / URP",
+  "target_renderer": "unity",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "maskmap",  "file": "{material}_maskmap_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Lit -> Mask Map",
+      "notes": "R = Metallic, G = Ambient Occlusion, B = Detail mask, A = Smoothness. The alpha channel is smoothness, which is 1 - roughness, and the converter applies that here rather than leaving it to the shader." },
+
+    { "key": "albedo",   "file": "{material}_{map}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Lit -> Base Map",
+      "notes": "sRGB. Unity's naming convention drops the resolution suffix, which is why this preset uses a different template." },
+
+    { "key": "normal",   "file": "{material}_normal.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Lit -> Normal Map",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "OpenGL (+Y), which is Unity's convention. Texture type must be Normal Map, not Default, or the green channel is in the wrong space." },
+
+    { "key": "emissive", "file": "{material}_emissive.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Lit -> Emission",
+      "notes": "sRGB, and Unity needs the emission keyword enabled on the material as well as the map assigned." }
+  ],
+
+  "material_defaults": {
+    "normal_space": "opengl",
+    "maskmap_compression": "BC7",
+    "smoothness_source": "1 - roughness"
+  },
+
+  "handoff": {
+    "snippet": "unity",
+    "notes": [
+      "The Mask Map's alpha carries smoothness, and Unity's default alpha compression bands it: use BC7 for this texture and check the alpha survives every step that touches the file afterwards.",
+      "Import every data map with an importer preset that clears sRGB. Unity's default for a fresh texture is sRGB on, and a mask map read as colour is wrong in a way that still looks like a material.",
+      "No height map in this preset: HDRP parallax occlusion and URP's equivalent need their own setup, and the map is in the masters folder if you want it.",
+      "Detail mask (B) is written as 0 because no detail mask exists in this build -- the channel is present so the packing layout is correct, and dark so nothing is masked in."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "Unity packs metallic, occlusion and smoothness into one texture, so the export writes a Mask Map rather than separate maps.",
+    "BC7 for the Mask Map, and an importer preset that clears sRGB for data maps, are the two settings that decide whether this export looks right."
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "name": "generic-pbr",
+  "label": "Generic PBR (separate maps)",
+  "target_renderer": "generic",
+  "renderer_versions_tested": [],
+  "verified": true,
+  "verified_against_renderer": false,
+  "default": true,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Base Color / Diffuse",
+      "notes": "sRGB. Leave the viewer's colour management alone on this one." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Normal",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "Non-colour. The green channel is +Y (OpenGL); flip it in the preset if your target is -Y." },
+
+    { "key": "height",   "file": "{material}_height_{res}.tif",
+      "space": "data",  "bit": 16, "format": "tiff", "slot": "Displacement",
+      "unit": "mm", "default_amplitude_mm": 3.0,
+      "notes": "16-bit because 8-bit relief steps visibly across a large flat surface. 2D displacement, mid-level 0.5." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Roughness",
+      "mode": "roughness", "clamp": [0.05, 0.95],
+      "notes": "Clamped away from 0 and 1: exactly 0 is a mirror and exactly 1 is a perfect diffuser, and neither is usually what the source meant." },
+
+    { "key": "metallic", "file": "{material}_metallic_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Metallic",
+      "notes": "Near-binary in practice: 0 or 1, with a soft edge where the material is mixed." },
+
+    { "key": "ao",       "file": "{material}_ao_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Ambient Occlusion",
+      "notes": "Wire it only if your renderer has no screen-space occlusion of its own." },
+
+    { "key": "emissive", "file": "{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Emission",
+      "notes": "Often absent: only materials that genuinely emit get one." },
+
+    { "key": "opacity",  "file": "{material}_opacity_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Opacity / Alpha",
+      "notes": "Straight alpha. Premultiply in the renderer if it asks, rather than in the file." }
+  ],
+
+  "material_defaults": {
+    "ior": 1.52,
+    "displacement_mode": "2d",
+    "roughness_convention": "roughness"
+  },
+
+  "handoff": {
+    "snippet": "text",
+    "notes": [
+      "Every map marked DIGITAL/OVERRIDE must be read with no transfer function applied.",
+      "The height map is 16-bit and carries the physical amplitude in mm; scale it against the tile's real size, not by eye.",
+      "The normal map is +Y (OpenGL). A target that wants -Y needs a green-channel flip, which this preset does not do for you."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "The preset to reach for when the target is not in the cookbook: one file per map, conventional names, no packing.",
+    "All files are 8-bit except the height map and the normal map, and both of those say why on their entry."
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "name": "corona",
+  "label": "Corona 9-12 (3ds Max)",
+  "target_renderer": "corona",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Base -> Color",
+      "notes": "sRGB. Leave Corona's colour management alone on this one." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Roughness",
+      "mode": "roughness", "clamp": [0.05, 0.95],
+      "notes": "Corona 7 and later take roughness directly, linear. Pre-7 versions want Glossiness, which is not a plain inversion of this file." },
+
+    { "key": "metallic", "file": "{material}_metallic_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Metalness",
+      "notes": "Near-binary, like every other target." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Geometry -> Normal",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "Green +Y (+OpenGL). Corona reads the normal as non-colour; a normal map imported through an sRGB path is the most common invisible mistake in this whole list." },
+
+    { "key": "height",   "file": "{material}_height_{res}.tif",
+      "space": "data",  "bit": 16, "format": "tiff", "slot": "Displacement",
+      "unit": "mm", "default_amplitude_mm": 3.0,
+      "notes": "The file carries 0..1 height, not millimetres. CoronaDisplacementMod controls the depth by screen size in pixels, so the amplitude on this entry is a starting point for other renderers rather than a number Corona reads." },
+
+    { "key": "ao",       "file": "{material}_ao_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "not wired by default",
+      "notes": "Corona has its own AO. This file is for masking and for other renderers." },
+
+    { "key": "emissive", "file": "{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Emission -> Color",
+      "notes": "sRGB. Coronas's emission strength is a material value." }
+  ],
+
+  "material_defaults": {
+    "ior": 1.52,
+    "displacement_mode": "screen_px",
+    "displacement_screen_px": 2.0
+  },
+
+  "handoff": {
+    "snippet": "maxscript",
+    "notes": [
+      "Corona: displacement is controlled by screen size (px), not a physical amount. Start at 2 px and lower it until the mortar depth reads correctly. Higher resolution height maps need a smaller screen size, not a larger one.",
+      "Every data map is read with gamma 1.0. The albedo is the only file that is colour.",
+      "Corona 9-12 take roughness on the roughness input. If you are on an older build, the Glossiness input wants the legacy curve, which is not shipped here -- say so rather than inverting the map by hand."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "The most-missed setting in a Corona export is the displacement mode: screen size in pixels, not millimetres."
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "name": "blender",
+  "label": "Blender 4.x (Principled BSDF)",
+  "target_renderer": "blender",
+  "renderer_versions_tested": [],
+  "verified": false,
+  "verified_against_renderer": false,
+  "default": false,
+  "max_resolution": 8192,
+
+  "maps": [
+    { "key": "albedo",   "file": "{material}_albedo_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Principled -> Base Color",
+      "notes": "Colour space sRGB." },
+
+    { "key": "roughness","file": "{material}_roughness_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Principled -> Roughness",
+      "mode": "roughness", "clamp": [0.05, 0.95],
+      "notes": "Colour space Non-Color. Blender applies the sRGB transfer curve to anything left as Color, which makes a roughness map look plausible and shade wrong." },
+
+    { "key": "metallic", "file": "{material}_metallic_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Principled -> Metallic",
+      "notes": "Non-Color." },
+
+    { "key": "normal",   "file": "{material}_normal_{res}.png",
+      "space": "data",  "bit": 16, "format": "png",  "slot": "Normal Map node -> Normal",
+      "orientation": "opengl", "strength_default": 1.0,
+      "notes": "Non-Color, +Y (OpenGL), which is Blender's own convention: no green-channel flip needed." },
+
+    { "key": "height",   "file": "{material}_height_{res}.tif",
+      "space": "data",  "bit": 16, "format": "tiff", "slot": "Displacement node -> Material Output",
+      "unit": "mm", "default_amplitude_mm": 3.0,
+      "notes": "Non-Color. Cycles needs subdivision or Adaptive Subdivision for this to do anything, and the displacement method must be set to Displacement or Both rather than Bump Only." },
+
+    { "key": "ao",       "file": "{material}_ao_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "not wired by default",
+      "notes": "Principled BSDF has no ambient occlusion input. Mixing this into Base Color is an artist's decision, not an exporter's." },
+
+    { "key": "opacity",  "file": "{material}_opacity_{res}.png",
+      "space": "data",  "bit": 8,  "format": "png",  "slot": "Principled -> Alpha",
+      "notes": "Blender expects straight alpha; set the material's blend mode deliberately, since the 4.x defaults changed." },
+
+    { "key": "emissive", "file": "{material}_emissive_{res}.png",
+      "space": "srgb",  "bit": 8,  "format": "png",  "slot": "Principled -> Emission Color",
+      "notes": "sRGB. Emission Strength is a material value and can exceed 1." }
+  ],
+
+  "material_defaults": {
+    "ior": 1.52,
+    "displacement_method": "BOTH"
+  },
+
+  "handoff": {
+    "snippet": "blender",
+    "notes": [
+      "The snippet sets colourspace_settings per node, which is the step people skip: a roughness map left as Color renders, and renders wrong.",
+      "For a tiled material, leave the image texture's extension as REPEAT and set the mapping scale, rather than editing UVs.",
+      "Coat, Sheen and Anisotropic exist on the 4.x Principled BSDF for car paint, velvet and brushed metal; nothing in this export fills them."
+    ]
+  },
+
+  "validator": null,
+  "notes": [
+    "The classic mistake for this target is forgetting Non-Color on the data maps, so the snippet sets it for every node it creates."
+  ]
+}

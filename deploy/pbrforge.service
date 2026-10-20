@@ -1,0 +1,111 @@
+# =============================================================================
+#  pbrforge.service -- systemd unit for a Linux server (no Docker)
+#
+#  Install:
+#      sudo install -m 0644 deploy/pbrforge.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now pbrforge
+#      systemctl status pbrforge
+#      journalctl -u pbrforge -n 50 --no-pager      <- the URL and pairing code
+#
+#  Adjust the three marked paths. The unit runs as a dedicated system user with
+#  no login shell, not as root and not as you -- a texture server has no business
+#  owning your home directory.
+#
+#        sudo useradd --system --home /var/lib/pbrforge --create-home pbrforge
+#        sudo mkdir -p /srv/textures && sudo chown pbrforge: /srv/textures
+#
+#  THE HEADLESS PROBLEM, AND WHY `pbrforge code` EXISTS
+#
+#  systemd has no console. The startup banner goes to the journal, which is
+#  readable but not exactly discoverable, and the pairing code is the one thing a
+#  user needs in order to connect a client at all.
+#
+#  So there are two ways to get it, and this unit arranges for both:
+#      journalctl -u pbrforge -n 30        the banner, including the code
+#      sudo -u pbrforge pbrforge code      prints the current code on demand
+#
+#  The second is the one to remember. It is also why the code is derived from a
+#  stable secret rather than randomly generated per start: a code that changes
+#  every restart is a code you can never look up after the fact.
+#
+#  Deliberately NOT set: Restart=always with a tiny interval. A server failing to
+#  bind because something else holds the port would then spin, hammering the
+#  journal and hiding the actual error. The settings below back off and give up
+#  after five attempts inside five minutes, which leaves the failure visible.
+# =============================================================================
+
+[Unit]
+Description=PBRForge texture and PBR material server
+Documentation=file:///opt/pbrforge/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+# ---- identity (edit: use your own user if you prefer) -----------------------
+User=pbrforge
+Group=pbrforge
+WorkingDirectory=/opt/pbrforge
+
+# ---- configuration ----------------------------------------------------------
+# Config (including the pairing secret and the TLS material) lives outside the
+# install directory so that redeploying the code never un-pairs a client.
+Environment=PBRFORGE_CONFIG_DIR=/var/lib/pbrforge
+Environment=PBRFORGE_LIBRARY=/srv/textures
+Environment=PBRFORGE_BIND=0.0.0.0
+Environment=PBRFORGE_PORT=7788
+Environment=PBRFORGE_HTTPS_PORT=7443
+Environment=PBRFORGE_AUTH=1
+Environment=PBRFORGE_TLS=1
+Environment=PBRFORGE_NAME=pbrforge-linux
+Environment=PYTHONUNBUFFERED=1
+
+# Any additional secrets or overrides, without putting them in this unit file.
+# Optional: a missing file is not an error with the leading dash.
+EnvironmentFile=-/etc/pbrforge.env
+
+ExecStart=/usr/bin/python3 -m pbrforge serve
+ExecReload=/bin/kill -HUP $MAINPID
+
+# ---- lifecycle --------------------------------------------------------------
+Restart=on-failure
+RestartSec=5s
+# Five failures in five minutes and it stays down, so the error is readable
+# instead of being buried under a restart storm.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+
+# ---- hardening ---------------------------------------------------------------
+# The server needs to read the install, write its config, and read/write the
+# library. Nothing else. Every line below is a capability removed.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# MemoryDenyWriteExecute is left OFF on purpose: CPython and any future native
+# imaging extension may need it, and a server that dies inexplicably on some
+# machines is a worse outcome than the marginal hardening.
+
+# The only two paths that may be written.
+ReadWritePaths=/var/lib/pbrforge
+ReadWritePaths=/srv/textures
+
+# ---- logging -----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pbrforge
+
+[Install]
+WantedBy=multi-user.target

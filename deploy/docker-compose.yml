@@ -1,0 +1,155 @@
+# =============================================================================
+#  docker-compose.yml -- run PBRForge on a NAS or a Linux box
+#
+#  Put this file next to the repository root and run it from there:
+#
+#      docker compose -f deploy/docker-compose.yml up -d
+#      docker compose -f deploy/docker-compose.yml logs -f      <- the URL + code
+#      docker compose -f deploy/docker-compose.yml run --rm pbrforge code
+#      docker compose -f deploy/docker-compose.yml down
+#
+#  TWO NETWORKING MODES. Read this before choosing, because the difference is
+#  visible to the user and cannot be fixed later by configuration alone.
+#
+#  A. BRIDGE (the default below)
+#     Ports are mapped explicitly. Everything works EXCEPT UDP broadcast
+#     discovery: the beacon cannot cross the bridge, so `pbrforge discover` on a
+#     client PC will not find this server. Clients are told the address once
+#     instead -- run `docker compose ... exec pbrforge url` or read the banner.
+#
+#     This is the mode that works on Docker Desktop (Windows/macOS), on Synology
+#     Container Manager, on QNAP Container Station and on Unraid. It is the
+#     default because it runs everywhere.
+#
+#  B. HOST NETWORKING (commented, at the bottom)
+#     No port mapping at all -- the container shares the host's network stack.
+#     Discovery works, and a reverse proxy sees real client addresses.
+#     Linux only. Docker Desktop ignores network_mode: host on Windows and macOS,
+#     so choosing it there produces a container that cannot be reached.
+#
+#  HOW A CLIENT CONNECTS
+#      http://<nas-ip>:7788          always works
+#      https://<nas-ip>:7443         works after installing the CA (see below)
+#
+#  The https URL is the one to prefer: a plain http LAN address is not a secure
+#  origin, so the browser refuses WebGPU and the preview falls back to WebGL2.
+#
+#  INSTALLING THE CERTIFICATE ON A CLIENT
+#      1. docker compose -f deploy/docker-compose.yml exec pbrforge tls trust
+#         (writes /config/client-trust inside the container)
+#      2. copy that folder out:
+#         docker compose -f deploy/docker-compose.yml cp \
+#             pbrforge:/config/client-trust ./client-trust
+#      3. on each client PC, run trust-ca.ps1 from it (Windows) or follow
+#         READ-ME.txt in it. Installing a CA root needs elevation -- there is no
+#         way around that, and software that claims otherwise is installing into
+#         the user store and will be rejected by some browsers.
+# =============================================================================
+
+name: pbrforge
+
+services:
+  pbrforge:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        # 1 = install `cryptography` so HTTPS works. Set to 0 for a smaller,
+        # HTTP-only image (clients then lose WebGPU in the preview).
+        WITH_TLS: "1"
+    image: pbrforge:0.1.0
+    container_name: pbrforge
+    restart: unless-stopped
+
+    ports:
+      - "7788:7788"       # http
+      - "7443:7443"       # https
+      # UDP 7789 is the discovery beacon. Publishing it is harmless, but it will
+      # NOT make discovery work from a bridge -- see the header. Leave it
+      # commented unless you switch to host networking.
+      # - "7789:7789/udp"
+
+    environment:
+      PBRFORGE_BIND: "0.0.0.0"
+      PBRFORGE_PORT: "7788"
+      PBRFORGE_HTTPS_PORT: "7443"
+      # Auth on. This container may sit on a home LAN where "the LAN is trusted"
+      # is a reasonable assumption -- but it is not one you have to make, and the
+      # cost of being wrong is your whole texture library on the network. The code
+      # is printed in the log; pairing is once per client.
+      PBRFORGE_AUTH: "1"
+      # Set to 0 to skip TLS generation and serve HTTP only.
+      PBRFORGE_TLS: "1"
+      # The pretty name shown in the UI's server badge and in `pbrforge discover`.
+      PBRFORGE_NAME: "pbrforge-nas"
+      TZ: "UTC"
+
+    volumes:
+      # IMPORTANT, both of them.
+      #
+      # /config holds the pairing secret and the TLS material. If it is not
+      # persisted, every restart rotates the secret and every paired client is
+      # logged out -- which reads as an authentication bug and is a missing
+      # volume. The entrypoint warns loudly if this is not a mount point.
+      #
+      # /library holds the textures. Point it at your existing library rather
+      # than an empty directory, or you will be uploading everything twice.
+      - pbrforge-config:/config
+      - type: bind
+          # Change this to wherever your textures actually live on the NAS.
+          # Synology example:  /volume1/textures
+          # Unraid example:    /mnt/user/textures
+        source: ./library
+        target: /library
+        bind:
+          # Bind, not a named volume, on purpose: the library is the user's data
+          # and must be visible from the NAS file manager, backup jobs and SMB.
+          # A named volume would make it invisible to all three.
+          create_host_path: true
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7788/api/ping',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # The pipeline stages will want to chew through large images on a small CPU.
+    # Left unset deliberately: a hard limit here would cause an OOM kill mid-job,
+    # which is a confusing way to find out the limit is too low. Set a limit once
+    # you know what the box can take.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2g
+
+    logging:
+      driver: json-file
+      options:
+        # The banner (URL + pairing code) must survive a reboot so it can be
+        # read after the fact. Default json-file rotation is unbounded, which on
+        # a NAS means a container slowly filling the volume.
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pbrforge-config:
+    name: pbrforge-config
+
+# =============================================================================
+#  OPTION B -- host networking. Linux only.
+#
+#  Replace the `ports:` and `network_mode` of the service above with this. Drops
+#  the port mapping entirely (host networking does not use it) and makes UDP
+#  discovery work.
+#
+#    network_mode: host
+#    # ports:            <- delete these; they are ignored with host networking
+#    environment:
+#      PBRFORGE_BIND: "0.0.0.0"
+#
+#  With host networking, PBRFORGE_PORT sets the port directly on the host and
+#  there is no mapping to keep in sync. `pbrforge discover` from a client PC then
+#  finds the server by broadcast, which is the behaviour a Windows server has.
+# =============================================================================
