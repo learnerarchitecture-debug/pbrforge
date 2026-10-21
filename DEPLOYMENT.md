@@ -3,8 +3,10 @@
 How to get PBRForge running on one machine and usable from the others, on a local
 network, without a cloud account and without a degree in PKI.
 
-> **0.2.0 status:** source deployment is supported; the installer and every deploy script
-> are not claimed as tested in this release. See section 1.1 and [INSTALLATION.md](INSTALLATION.md).
+> **0.2.0 status:** the Windows installer and source deployment are both supported. The installer
+> was exercised for fresh install, in-place reinstall over a running server, packaged autostart and
+> uninstall on Windows 11. Docker and systemd remain documented design routes, not part of that
+> test pass. See section 1.1 and [INSTALLATION.md](INSTALLATION.md).
 
 This document is the operational half of the project. `README.md` says what
 PBRForge is, `INSTALLATION.md` covers a single developer machine, and this file
@@ -42,11 +44,12 @@ The server, web app, job manager and the full 15-stage pipeline are implemented 
 source. A LAN client can upload a photo, watch the job, inspect and download the resulting material.
 Pairing, HTTPS, discovery and `doctor`/`selftest` are present.
 
-The **compiled Windows installer and some scripts in `deploy/` were not exercised in 0.2.0**. Treat
-the packaged-install sections as design targets until the install/upgrade/uninstall cycle has
-actually been run. Source deployment (this document's paths, config, library and cache split) is the
-supported route in this release. The implementation status is tracked in `README.md` and
-`CHANGELOG.md`; when this file and those disagree, those win.
+The **Windows installer was exercised on Windows 11 for the 0.2.0 build**: silent fresh install,
+start/ping/stop, packaged autostart, reinstall while the server was running, and uninstall with config
+preservation. It has not been run on a second machine, and the Docker/systemd routes were not part of
+this pass. Source deployment (this document's paths, config, library and cache split) remains fully
+supported. The implementation status is tracked in `README.md` and `CHANGELOG.md`; when this file and
+those disagree, those win.
 
 ---
 
@@ -151,8 +154,13 @@ install (needs an elevated shell).
 **Either way, verify:**
 
 ```powershell
-pbrforge doctor      # should end in "ready to run"
-pbrforge selftest    # 18/18
+# Packaged: the installer does not add itself to PATH.
+& "$env:LOCALAPPDATA\Programs\PBRForge\pbrforge.exe" doctor
+& "$env:LOCALAPPDATA\Programs\PBRForge\pbrforge.exe" selftest
+
+# Source:
+python -m pbrforge doctor      # should end in "ready to run"
+python -m pbrforge selftest    # 18/18
 ```
 
 `doctor` is the front door. It reports Python, GPU, paths, ports, network, TLS,
@@ -162,11 +170,15 @@ thing it does not like. If it ends in `ready to run`, the host is fine.
 ### 4.2 Start it
 
 ```powershell
-pbrforge serve
+# Source:
+python -m pbrforge serve
+
+# Packaged:
+& "$env:LOCALAPPDATA\Programs\PBRForge\pbrforge.exe" serve
 ```
 
-or double-click `start-server.cmd` if the installer wrote one. The console shows
-the address and the code, which is the entire point of it being a console app:
+or launch **PBRForge** from the Start Menu or desktop. The console shows the
+address and the code, which is the entire point of it being a console app:
 
 ```
   PBRForge 0.1.0  ·  listening on 0.0.0.0:7788

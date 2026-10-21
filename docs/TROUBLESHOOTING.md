@@ -287,7 +287,7 @@ suppressed default is **keep your textures**.
 Run it from a console so you can see the log:
 
 ```powershell
-.\PBRForge-Setup-0.1.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\pbrforge-install.log
+.\PBRForge-Setup-0.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\pbrforge-install.log
 ```
 
 Then read `%TEMP%\pbrforge-install.log`. The two things that actually go wrong are a leftover

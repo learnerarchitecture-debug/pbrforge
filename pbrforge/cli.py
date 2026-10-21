@@ -937,4 +937,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  or run 'pbrforge selftest -v' and report the output.\n")
         return 1
     finally:
-        _pause_if_double_clicked()
+        # Only a human starting the server needs the "press Enter" hold. A
+        # packaged command run by an installer (tls init, stop) has a hidden
+        # console; pausing there is indistinguishable from a hang and blocks
+        # upgrades and uninstalls. serve already blocks while it is healthy.
+        if command == "serve":
+            _pause_if_double_clicked()

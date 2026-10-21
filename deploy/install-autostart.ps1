@@ -84,15 +84,21 @@ if ($Remove) {
     # PID that may already be recycled. Running the app's own stop first clears it
     # and gives the same guard (refuse unless the PID is confirmed) as everywhere
     # else. Then Stop-ScheduledTask is the belt to that braces.
+    $installedExe = Join-Path (Split-Path -Parent $PSScriptRoot) 'pbrforge.exe'
     $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if ($python) {
-        Push-Location (Split-Path -Parent $PSScriptRoot)
-        try {
-            $out = & $python -m pbrforge stop 2>&1 | Out-String
+    try {
+        if (Test-Path $installedExe) {
+            $out = & $installedExe stop 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) { Info "pbrforge stop: $($out.Trim())" }
-        } catch {
-            Info "pbrforge stop was not available: $_"
-        } finally { Pop-Location }
+        } elseif ($python) {
+            Push-Location (Split-Path -Parent $PSScriptRoot)
+            try {
+                $out = & $python -m pbrforge stop 2>&1 | Out-String
+                if ($LASTEXITCODE -eq 0) { Info "pbrforge stop: $($out.Trim())" }
+            } finally { Pop-Location }
+        }
+    } catch {
+        Info "pbrforge stop was not available: $_"
     }
 
     if ($task.State -eq 'Running') {
@@ -117,18 +123,30 @@ if (-not (Test-Path $dir)) {
 }
 Info "install    $dir"
 
-$python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $python) {
-    Bad "python is not on PATH."
-    Info "A scheduled task inherits no shell profile, so an aliased or"
-    Info "profile-defined python will not be found when the task fires."
-    exit 1
-}
-Info "python     $python"
-
-if (-not (Test-Path (Join-Path $dir 'pbrforge\__main__.py'))) {
-    Bad "$dir does not contain the pbrforge package."
-    exit 1
+# A packaged install has pbrforge.exe and no Python package; a source install
+# has pbrforge\__main__.py and needs Python. Detect which one is in front of us
+# rather than assuming the source-tree layout inside an installer.
+$installedExe = Join-Path $dir 'pbrforge.exe'
+if (Test-Path $installedExe) {
+    $runExe = $installedExe
+    $runArgs = "serve --port $Port"
+    Info "mode       packaged"
+} else {
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (-not $python) {
+        Bad "python is not on PATH and there is no pbrforge.exe in $dir."
+        Info "A scheduled task inherits no shell profile, so an aliased or"
+        Info "profile-defined python will not be found when the task fires."
+        exit 1
+    }
+    if (-not (Test-Path (Join-Path $dir 'pbrforge\__main__.py'))) {
+        Bad "$dir contains neither pbrforge.exe nor the pbrforge package."
+        exit 1
+    }
+    $runExe = $python
+    $runArgs = "-m pbrforge serve --port $Port"
+    Info "mode       source"
+    Info "python     $python"
 }
 
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -138,8 +156,8 @@ if ($existing) {
     exit 0
 }
 
-$action = New-ScheduledTaskAction -Execute $python `
-    -Argument "-m pbrforge serve --port $Port" `
+$action = New-ScheduledTaskAction -Execute $runExe `
+    -Argument $runArgs `
     -WorkingDirectory $dir
 
 # AtLogOn is the default because it is the one that keeps the console visible.
@@ -172,7 +190,7 @@ try {
 
 Ok "registered: $TaskName"
 Info "trigger    $(if ($AtStartup) { 'at system startup' } else { 'at logon' })"
-Info "action     $python -m pbrforge serve --port $Port"
+Info "action     $runExe $runArgs"
 Info "in         $dir"
 
 Write-Host ""

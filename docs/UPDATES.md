@@ -16,10 +16,12 @@ account, no telemetry and no mirror fallback.
 | Size verification on every download | ✅ |
 | Silent Inno Setup launch | ✅ code path |
 | UI settings (`check`, `auto_install`) persisted to `config.toml` | ✅ |
-| GitHub Release with an installer asset | ❌ not published yet |
-| Compiled Windows installer | ❌ not built in this release |
+| GitHub Release with an installer asset | ✅ `v0.2.0` published |
+| Compiled Windows installer | ✅ built and install/uninstall verified |
+| Install of a **newer** release | ⚠️ not yet exercised; 0.2.0 is current |
 
-The absence of a release is reported plainly. Update checking is not allowed to invent an update.
+The check returns a released version or a named failure. It is not allowed to invent an update, and
+it never falls back to an arbitrary executable from the asset list.
 
 ---
 
@@ -70,8 +72,9 @@ PBRForge-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 8. Exit the running server so Windows can replace files. The installer's
    `PrepareToInstall` also calls `pbrforge stop` as a second guard.
 
-If any verification fails, the downloaded file is never executed. The error names the expected and
-received values.
+A silent update does not relaunch the server. Start **PBRForge** from the Start Menu (or let the
+logon task start it) when the installer finishes. If any verification fails, the downloaded file is
+never executed; the error names the expected and received values.
 
 ### Auto-install
 
@@ -88,26 +91,28 @@ The web dialog writes settings through `POST /api/settings`; the CLI writes the 
 
 ---
 
-## Release contract (for when the installer is built)
+## Release contract (exercised for 0.2.0)
 
 Publish a GitHub Release whose tag is `v<version>` and attach exactly:
 
 ```text
 PBRForge-Setup-<version>.exe
+SHA256SUMS.txt
 ```
 
 The version inside the asset name must match `pbrforge.__version__` and the tag without the `v`.
-The installer must:
+The 0.2.0 installer was verified to:
 
 - install per-user without Administrator;
 - support `/VERYSILENT` and `/SUPPRESSMSGBOXES`;
 - stop the running server before replacing files;
-- preserve the user's library and `config.toml`;
-- restart the server only if it was running before the upgrade;
-- write an uninstall entry and provide a working uninstaller.
+- preserve the user's library and `config.toml` across install, upgrade and uninstall;
+- register a working uninstaller and remove shortcuts and the uninstall key;
+- leave the server stopped after a silent update (start it from the Start Menu or logon task).
 
-No release is created until those properties have actually been exercised. See
-[INSTALLATION.md](../INSTALLATION.md) for the current source setup.
+The build is **not code-signed**, so SmartScreen warns and the release says so. No later release
+should reuse this tag or replace the 0.2.0 asset with different bytes. See
+[INSTALLATION.md](../INSTALLATION.md) for both install routes.
 
 ---
 
@@ -128,13 +133,15 @@ No release is created until those properties have actually been exercised. See
 
 ## CLI output
 
+From the published 0.2.0 release:
+
 ```text
   current  0.2.0
-  latest   —
-  status   no GitHub release exists yet
+  latest   0.2.0
+  status   up to date
 ```
 
-When a release exists:
+When a newer release exists:
 
 ```text
   current  0.2.0
@@ -142,6 +149,9 @@ When a release exists:
   status   update available  ·  PBRForge-Setup-0.3.0.exe
   release  https://github.com/learnerarchitecture-debug/pbrforge/releases/tag/v0.3.0
 ```
+
+If GitHub returns no release, the status is `no GitHub release exists yet`. That remains a supported
+honest state, not a fake update.
 
 ---
 

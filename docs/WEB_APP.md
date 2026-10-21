@@ -207,6 +207,9 @@ release notes. It is honest about the three possible states:
 | Release exists, no installer asset | “the latest release has no Windows installer asset” |
 | Update available | Version, asset name, size and **Install update** |
 
+The `v0.2.0` release is published, so a fresh check from this version reports **up to date**. The
+other messages remain the honest result when the API or asset list does not contain what is needed.
+
 `auto_install = true` means a **manual** check may start the verified installer without another
 click. It does not poll in the background. The default is `false`. See
 [UPDATES.md](UPDATES.md) for the verification and installer contract.
@@ -222,7 +225,7 @@ click. It does not poll in the background. The default is `false`. See
 | Job fails during ingest | Source is truncated, not actually PNG, or above the configured cap |
 | Result is dark / contrasty | Auto levels was probably enabled; regenerate with it off |
 | Brick mortar is raised | Choose category **Brick** or height **invert** |
-| Update says no release | Correct until a GitHub Release is published |
+| Update says no release | Correct only if the GitHub API returns none; 0.2.0 is published, so check the repo setting and network |
 | Port already in use | `pbrforge stop`, then `pbrforge serve`; do not kill an unrelated PID |
 
 More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

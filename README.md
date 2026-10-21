@@ -25,9 +25,9 @@ No account. No cloud. No telemetry. A local server and a local library, built fo
 | ⚙️ **Pipeline** | ✅ built | 15 stages from `ingest` to `qc`; one authoritative height field; seam score recomputed from the packed maps |
 | 🎛️ **CLI** | ✅ built | `serve`, `make`, `batch`, `library`, `config --set`, `update`, `doctor`, `selftest`, `stop` |
 | 📦 **Jobs + library** | ✅ built | staging → promote → previews → zip → `job.json`; survives a server restart |
-| 🔄 **Updates** | ✅ built, no release yet | GitHub Release check, size/hash verification, opt‑in silent Inno install; honest “no release exists yet” message |
+| 🔄 **Updates** | ✅ released | GitHub Release check, size/hash verification, opt‑in silent Inno install; the 0.2.0 release publishes the installer and `SHA256SUMS.txt` |
 | 🧪 **Tests** | ✅ 18/18 | `selftest`, seam fixture separation, pack contract, synthetic 256/512/1024 end‑to‑end |
-| 🪟 **Windows installer** | ⏸️ not built | Source template exists; no installer is claimed as tested in this release |
+| 🪟 **Windows installer** | ✅ built + verified | Per‑user Inno installer; fresh install, in‑place reinstall over a running server, packaged autostart, start/stop and uninstall all exercised |
 | 🤖 **AI** | ❌ absent | Deliberately classical. No model downloads, no account, no training |
 
 > **Honest boundary:** the browser can convert any image it can decode (JPEG, PNG, WebP, AVIF,
@@ -36,9 +36,28 @@ No account. No cloud. No telemetry. A local server and a local library, built fo
 
 ---
 
+## 🪟 Windows installer (recommended on Windows)
+
+Download **[PBRForge-Setup-0.2.0.exe](https://github.com/learnerarchitecture-debug/pbrforge/releases/latest)**
+and run it. It installs in `%LOCALAPPDATA%\Programs\PBRForge` without Administrator.
+
+- **No Python needed.** The executable, UI, docs and deploy scripts are bundled.
+- **Your data is separate.** Config stays in `%APPDATA%\pbrforge`; the library stays in
+  `Documents\PBRForge`; uninstalling preserves both unless you explicitly ask it not to.
+- **Network options are opt‑in.** The firewall rule and logon autostart are unchecked; the local
+  HTTPS certificate is created by default so LAN previews keep WebGPU.
+- **Unsigned build.** Windows SmartScreen will show a warning because there is no paid code‑signing
+  certificate. Choose **More info → Run anyway**.
+- **No PATH change.** Use the Start Menu shortcuts, or run
+  `%LOCALAPPDATA%\Programs\PBRForge\pbrforge.exe` directly.
+
+The release also publishes `SHA256SUMS.txt` for a manual checksum check.
+
+---
+
 ## 🚀 Quickstart (source, Windows/macOS/Linux)
 
-Requirements: **Python 3.12+**, nothing else. The installable path is standard library only.
+Requirements: **Python 3.12+**, nothing else. The source route is standard library only.
 
 ```powershell
 git clone https://github.com/learnerarchitecture-debug/pbrforge.git
@@ -190,7 +209,8 @@ The design is deliberately small:
 3. If a newer release exists, PBRForge selects the expected asset
    `PBRForge-Setup-<version>.exe` — never “the first exe in the list”.
 4. On explicit install, it verifies the advertised SHA‑256 when supplied and always verifies size.
-5. It launches the Inno Setup installer silently, then exits so Windows can replace files.
+5. It launches the Inno Setup installer silently, then exits so Windows can replace files. The server
+   stays stopped after a silent update; start PBRForge again from the Start Menu or logon task.
 
 Settings live in `config.toml`:
 
@@ -202,11 +222,17 @@ repo            = "learnerarchitecture-debug/pbrforge"
 ```
 
 There is no telemetry, no background upload, no mirror fallback, and no “update failed, deleted your
-working copy” path. With no GitHub Release published, the tool says exactly that:
+working copy” path. The 0.2.0 release is published; a check from this version reports that it is
+current:
 
 ```text
-status   no GitHub release exists yet
+current  0.2.0
+latest   0.2.0
+status   up to date
 ```
+
+If a release is missing or has no installer asset, the tool says so by name instead of downloading
+something arbitrary.
 
 ---
 
@@ -255,8 +281,8 @@ pbrforge/                  Python package (authoritative)
 └─ config.py               canonical TOML load/save and update settings
 ui/prototype.html          the dependency-free web app
 docs/                      design, pipeline, presets, QC, deployment and API notes
-installer/                 Inno Setup source template (not built/tested in 0.2.0)
-deploy/                    portable/LAN/service build scripts (not exercised in 0.2.0)
+installer/                 Inno Setup source used for the 0.2.0 installer
+deploy/                    portable/LAN/service build and install scripts
 ```
 
 The root‑level `cli.py`, `config.py`, `core/`, and `server/` directories from the earlier scaffold
@@ -276,7 +302,7 @@ have been removed. `pbrforge/` is the only implementation.
 | **[docs/QC_METRICS.md](docs/QC_METRICS.md)** | Metric formulas, thresholds and what “warn” means |
 | **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | How the pieces fit together |
 | **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** | Symptom → cause → fix |
-| **[INSTALLATION.md](INSTALLATION.md)** | Source setup and environment notes |
+| **[INSTALLATION.md](INSTALLATION.md)** | Windows installer, source setup and environment notes |
 | **[DEPLOYMENT.md](DEPLOYMENT.md)** | LAN, HTTPS, firewall and service notes |
 | **[CHANGELOG.md](CHANGELOG.md)** | What changed and what is still planned |
 
@@ -285,7 +311,8 @@ have been removed. `pbrforge/` is the only implementation.
 - **PNG only** in the Python pipeline. The browser converts what it can decode before upload.
 - **One worker by default.** 1024 px synthetic brick ≈ 43 s; 512 px ≈ 10 s; 256 px ≈ 3 s on the test machine.
 - **No real photograph has been calibrated yet.** The synthetic brick fixture and metric vectors are green; photographic tuning is the next honest step.
-- **No Windows installer or GitHub Release is published.** Update checking is implemented and returns an honest “no release” result until one exists.
+- **The installer is unsigned**, and the fresh-install/reinstall/uninstall cycle was exercised on one Windows 11 machine. It has not been tested on a second PC.
+- **No newer release exists yet**, so the update path has been checked against the GitHub API and the published asset, but it has not installed a real version-to-version upgrade.
 - **AI upscale, matting and seam refinement are absent by design**, not silently stubbed.
 
 ---

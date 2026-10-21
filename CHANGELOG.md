@@ -9,7 +9,7 @@ at `0.3.9` because the hash pins the code path, parameters and model versions th
 
 ---
 
-## [0.2.0] - 2026-10-21
+## [0.2.0] - 2026-10-22
 
 The first release where a photo can actually become a finished material through the browser.
 
@@ -26,6 +26,10 @@ The first release where a photo can actually become a finished material through 
 - **Canonical config writer**: `Config.save()` and `[updates]` fields.
 - **Update system**: GitHub latest-release check, semver comparison, expected asset selection,
   size/SHA-256 verification, silent Inno launch, cached checks, honest failure states.
+- **Windows packaging**: a PyInstaller one-file executable and a per-user Inno Setup installer
+  (`PBRForge-Setup-0.2.0.exe`), with optional firewall, local HTTPS and packaged autostart tasks.
+- **GitHub Release `v0.2.0`**: published installer plus `SHA256SUMS.txt`, so the update check and
+  asset selection have a real release to read.
 - **Documentation**: `docs/WEB_APP.md`, `docs/CLI.md`, `docs/UPDATES.md`, rewritten README.
 
 ### Changed
@@ -47,6 +51,10 @@ The first release where a photo can actually become a finished material through 
 - Result panel scrolling under the sticky topbar.
 - Map-view tabs doing nothing after render.
 - Library detail reporting no map dimensions.
+- **Installer and uninstaller could hang in a hidden console**: the packaged CLI paused for Enter on
+  `tls init` and `stop`. Only `serve` pauses now, so automated install/upgrade/uninstall completes.
+- **Packaged autostart looked for a Python package that the installer does not ship**. It now detects
+  `pbrforge.exe` and registers `pbrforge.exe serve`; source installs still use `python -m pbrforge`.
 
 ### Verified
 
@@ -56,12 +64,16 @@ The first release where a photo can actually become a finished material through 
 - Synthetic brick end-to-end at 256, 512 and 1024 px; browser upload, progress, result, library
   detail, seven map downloads and zip download exercised.
 - `Config.save()` round-trip and CLI `make` / `library` / `config --set` / `update`.
+- Installer: silent fresh install, start/ping/stop, packaged autostart registration/removal,
+  in-place reinstall over a running server (port released, PID file cleared) and silent uninstall
+  with config preservation. Built with Inno Setup 6.7.3; SHA-256 written to `dist\SHA256SUMS.txt`.
+- Published `v0.2.0` release asset selection and update check.
 
 ### Not shipped in this release
 
-- No compiled Windows installer and no GitHub Release. The update path correctly reports that no
-  release exists; it does not claim an update it cannot install.
 - No real-photo calibration yet; the synthetic fixture is green but photographic tuning remains.
+- No installation on a second Windows PC and no code-signing certificate; SmartScreen warns.
+- No newer release exists, so a version-to-version update download/install has not been exercised.
 - No AI upscale, matting or seam refinement.
 
 ### Planned — Phase 1 (core)

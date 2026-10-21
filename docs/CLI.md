@@ -190,8 +190,9 @@ python -m pbrforge update --install
 | `--repo OWNER/NAME` | Override `updates.repo` for this run |
 
 The command never installs unless `--install` is passed (or `auto_install = true` is combined with a
-manual server check). With no release published it prints `no GitHub release exists yet` and exits
-successfully — there is nothing to install.
+manual server check). The published `v0.2.0` release is visible to this check; from 0.2.0 the result
+is `up to date`. If no release exists, it prints `no GitHub release exists yet` and exits successfully
+— there is nothing to install.
 
 See [UPDATES.md](UPDATES.md).
 

@@ -1,12 +1,50 @@
-# 🛠️ Installing PBRForge from source
+# 🛠️ Installing PBRForge
 
-**0.2.0 status:** source installation is the supported path. A Windows installer is **not built or
-tested** in this release. There is no published GitHub Release yet, so update checks honestly report
-that none exists.
+**0.2.0 status:** two supported routes. The Windows installer is built, published and exercised on
+Windows 11. Source installation remains fully supported on Windows, macOS and Linux. The installer
+is unsigned, so SmartScreen needs one explicit **Run anyway** click.
 
 ---
 
-## 1. What you need
+## 🪟 Windows installer (recommended on Windows)
+
+Download **`PBRForge-Setup-0.2.0.exe`** from the
+[latest release](https://github.com/learnerarchitecture-debug/pbrforge/releases/latest), run it, and
+follow the wizard. It installs per‑user in `%LOCALAPPDATA%\Programs\PBRForge` without Administrator.
+
+| Decision | Default | What it means |
+|---|---|---|
+| Desktop and Start Menu shortcuts | on | Start PBRForge, **Doctor**, firewall helper and uninstaller |
+| Local HTTPS certificate | on | Generates a local CA/leaf in `%APPDATA%\pbrforge\tls` for LAN WebGPU |
+| Windows firewall rule | off | An Administrator prompt is needed; the Start Menu has a helper |
+| Autostart at logon | off | Registers a per‑user scheduled task named **PBRForge Server** |
+
+The config and library live **outside** the install directory, so upgrades and uninstalls do not
+overwrite them. Uninstall asks whether to delete them; the default is to keep both.
+
+The installer does **not** modify `PATH`. Use the Start Menu shortcuts, or invoke the executable
+directly:
+
+```powershell
+$pbrforge = "$env:LOCALAPPDATA\Programs\PBRForge\pbrforge.exe"
+& $pbrforge doctor
+& $pbrforge selftest
+& $pbrforge serve
+```
+
+To verify the download manually, fetch `SHA256SUMS.txt` from the same release and compare:
+
+```powershell
+Get-FileHash .\PBRForge-Setup-0.2.0.exe -Algorithm SHA256
+```
+
+What the 0.2.0 build was tested against: silent fresh install, server start/ping/stop, packaged
+autostart registration/removal, reinstall over a running server, and silent uninstall with config
+preservation. It has not been tested on a second machine.
+
+---
+
+## 1. What you need (source route)
 
 | Requirement | Why |
 |---|---|
@@ -162,23 +200,38 @@ not.
 python -m pbrforge update --check
 ```
 
-Until a GitHub Release exists, the result is:
+The 0.2.0 GitHub Release is published, so this build reports:
 
 ```text
-status   no GitHub release exists yet
+current  0.2.0
+latest   0.2.0
+status   up to date
 ```
 
-That is correct. Do not expect an installer until one is published. See
-[docs/UPDATES.md](docs/UPDATES.md).
+A newer release must contain an asset named exactly `PBRForge-Setup-<version>.exe`. PBRForge verifies
+its size and, when GitHub supplies a digest, its SHA‑256 before offering to launch it. There is no
+background poller and `auto_install` is off by default. See [docs/UPDATES.md](docs/UPDATES.md).
 
 ---
 
 ## 9. Installer / packaging status
 
-The repository contains `installer/pbrforge.iss` and scripts under `deploy/`, but **no compiled
-installer is shipped in 0.2.0**, and the install/upgrade/uninstall cycle has not been claimed as
-verified in this release. The earlier documentation that described a tested `0.1.0` setup executable
-is obsolete. Build and exercise those scripts before treating them as a supported route.
+`installer/pbrforge.iss` plus `deploy/build-installer.ps1` produced
+`PBRForge-Setup-0.2.0.exe` with Inno Setup 6.7.3. The build was exercised end to end:
+
+| Check | Result |
+|---|---|
+| Portable one‑file executable | built; packaged `selftest` passed |
+| Installer compile and SHA‑256 | built; checksum written to `dist\SHA256SUMS.txt` |
+| Silent fresh install, `/CURRENTUSER` | exit 0; config/library outside install |
+| Start → ping → `stop` | server answered and the port was released |
+| Package‑aware autostart | task pointed at `pbrforge.exe serve`; removed cleanly |
+| Reinstall while the server was running | installer stopped the server, replaced the exe, released the port |
+| Silent uninstall | install dir, shortcuts and uninstall key removed; user config preserved |
+
+The installer is not code‑signed. The install/upgrade/uninstall cycle was run on one Windows 11
+machine, not a second PC. A version‑to‑version update has not been exercised because 0.2.0 is the
+newest release.
 
 ---
 
@@ -186,6 +239,8 @@ is obsolete. Build and exercise those scripts before treating them as a supporte
 
 | Symptom | Cause / fix |
 |---|---|
+| SmartScreen blocks the installer | It is unsigned. **More info → Run anyway**, or verify `SHA256SUMS.txt` first |
+| `pbrforge` is not recognised after install | The installer does not edit `PATH`; use the Start Menu or the full path under `%LOCALAPPDATA%\Programs\PBRForge` |
 | `python` opens the Microsoft Store | Store alias; install python.org Python and reopen the terminal |
 | `doctor` says port busy | `python -m pbrforge stop`, then start again |
 | 401 / blank page | Open `/pair?next=/` and enter the code from the server console |
