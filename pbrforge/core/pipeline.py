@@ -88,9 +88,17 @@ def block_to_dict(block: Any) -> dict[str, Any]:
 
 
 def stage_key(name: str, ctx: PipelineContext, upstream_keys: dict[str, str]) -> str:
-    """`sha256(stage + version + its params + the global params + upstream keys)`."""
+    """`sha256(stage + version + its params + the global params + upstream keys)`.
+
+    The parameter block is looked up through the stage, not by stage name: the
+    derive stages deliberately read ``height``/``normal``/``ao`` blocks whose
+    names do not equal their stage names. Assuming the two matched made every
+    cold run fail at the first derive stage, while a warm cache could hide it.
+    """
     from .. import __version__
-    block = ctx.params.block(name) if hasattr(ctx.params, "block") else None
+    from ..stages import get_stage
+    stage = get_stage(name)
+    block = stage.params(ctx) if hasattr(ctx.params, "block") else None
     g = {"material": ctx.params.material, "category": ctx.params.category,
          "seed": ctx.params.seed, "size_mm": ctx.params.size_mm}
     blob = json.dumps({"v": __version__, "g": g, "p": block_to_dict(block),
@@ -143,8 +151,14 @@ def run_pipeline(
     force: bool = False,
     use_cache: bool = True,
     supplied: set[str] | None = None,
+    on_row: Any = None,
 ) -> RunReport:
-    """Run the full stage DAG. Returns a `RunReport` with per-stage rows."""
+    """Run the full stage DAG. Returns a `RunReport` with per-stage rows.
+
+    ``on_row`` is an optional callback invoked with each completed ``Row``. The
+    server uses it to expose per-stage progress without changing the stage
+    protocol or making a stage know it is being watched.
+    """
     from ..stages import STAGE_ORDER, get_stage
 
     started = time.monotonic()
@@ -152,19 +166,27 @@ def run_pipeline(
     keys: dict[str, str] = {}
     supplied = set(supplied if supplied is not None else ctx.maps)
 
+    def _emit(row: Row) -> None:
+        report.rows.append(row)
+        if on_row is not None:
+            try:
+                on_row(row)
+            except Exception:      # a progress listener must never fail a job
+                pass
+
     for name in STAGE_ORDER:
         st = get_stage(name)
-        row = Row(name=name)
+        row = Row(name=name, status="pending")
 
         if not st.enabled(ctx):
             row.status = "off"
-            report.rows.append(row)
+            _emit(row)
             continue
 
         if not all(k in ctx.maps for k in st.needs):
             row.status = "skipped"
             row.detail = f"missing needs: {', '.join(k for k in st.needs if k not in ctx.maps)}"
-            report.rows.append(row)
+            _emit(row)
             continue
 
         key = stage_key(name, ctx, keys)
@@ -214,7 +236,7 @@ def run_pipeline(
             row.detail = cached.get("detail_line", "")
             ctx.record(name, block_to_dict(st.params(ctx)), row.metrics,
                        cached=True)
-            report.rows.append(row)
+            _emit(row)
             continue
 
         # ---- run it ----
@@ -232,7 +254,7 @@ def run_pipeline(
             except Exception as exc:
                 row.status = "failed"
                 row.detail = f"{type(exc).__name__}: {exc}"
-                report.rows.append(row)
+                _emit(row)
                 report.failed = True
                 return report
 
@@ -258,7 +280,7 @@ def run_pipeline(
             ctx.cache.put_bytes(key, meta_key,
                                 json.dumps(payload, sort_keys=True).encode("utf-8"))
 
-        report.rows.append(row)
+        _emit(row)
 
     save_keys(ctx, keys)
     report.seconds = time.monotonic() - started

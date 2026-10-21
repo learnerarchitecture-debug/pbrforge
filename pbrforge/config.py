@@ -55,6 +55,11 @@ resolution    = 4096
 deterministic = true
 ai_enabled    = false
 
+[updates]
+check        = true         # ask GitHub once per day whether a newer release exists
+auto_install = false        # false = show the update, let the user click Install
+repo         = "learnerarchitecture-debug/pbrforge"
+
 [ui]
 theme  = "dark"
 accent = "amber"
@@ -183,6 +188,10 @@ def _dump_toml(data: dict[str, Any]) -> str:
 
 
 def _fmt(v: Any) -> str:
+    if v is None:
+        return '""'
+    if isinstance(v, Path):
+        v = str(v)
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, str):
@@ -221,6 +230,10 @@ class Config:
     resolution: int = 4096
     deterministic: bool = True
     ai_enabled: bool = False
+    # updates
+    update_check: bool = True
+    update_auto_install: bool = False
+    update_repo: str = "learnerarchitecture-debug/pbrforge"
     # ui
     theme: str = "dark"
     accent: str = "amber"
@@ -285,6 +298,14 @@ class Config:
             else:
                 flat[section] = values
 
+        # `[updates] check = true` is friendlier than repeating the section
+        # name in every key; map the three short names onto their attributes.
+        for alias, attr in (("check", "update_check"),
+                            ("auto_install", "update_auto_install"),
+                            ("repo", "update_repo")):
+            if alias in flat:
+                flat[attr] = flat.pop(alias)
+
         for key, value in flat.items():
             if key in known and key not in ("config_dir", "config_file", "source", "load_error"):
                 setattr(cfg, key, value)
@@ -297,6 +318,8 @@ class Config:
             "TEMP": "temp", "MAX_WORKERS": "max_workers",
             "VRAM_BUDGET_MB": "vram_budget_mb", "CPU_MEM_BUDGET_MB": "cpu_mem_budget_mb",
             "PRESET": "preset", "RESOLUTION": "resolution", "AI_ENABLED": "ai_enabled",
+            "UPDATE_CHECK": "update_check", "UPDATE_AUTO_INSTALL": "update_auto_install",
+            "UPDATE_REPO": "update_repo",
             "THEME": "theme", "ACCENT": "accent",
         }
         touched = False
@@ -367,6 +390,50 @@ class Config:
             return target
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
+        return target
+
+    def save(self, path: Path | None = None) -> Path:
+        """Write the effective values as a canonical config.toml.
+
+        ``config --set`` needs to persist a change, and the standard library has
+        no TOML writer. This writes every known field into its section, so the
+        file is complete and `Config.load` reproduces exactly this object. It
+        does not preserve comments: rewriting a config with a machine is the one
+        operation that cannot, and saying so is better than silently dropping
+        them. `--set` prints the file it wrote.
+        """
+        target = Path(path or self.config_file)
+        sections: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+            ("server", (("bind", "bind"), ("port", "port"),
+                        ("https_port", "https_port"), ("tls", "tls"),
+                        ("auth", "auth"), ("discovery", "discovery"),
+                        ("open_browser", "open_browser"),
+                        ("max_upload_mb", "max_upload_mb"))),
+            ("paths", (("library", "library"), ("cache", "cache"),
+                       ("temp", "temp"))),
+            ("performance", (("max_workers", "max_workers"),
+                             ("vram_budget_mb", "vram_budget_mb"),
+                             ("cpu_mem_budget_mb", "cpu_mem_budget_mb"))),
+            ("defaults", (("preset", "preset"), ("resolution", "resolution"),
+                          ("deterministic", "deterministic"),
+                          ("ai_enabled", "ai_enabled"))),
+            ("updates", (("check", "update_check"),
+                         ("auto_install", "update_auto_install"),
+                         ("repo", "update_repo"))),
+            ("ui", (("theme", "theme"), ("accent", "accent"))),
+        )
+        lines = [
+            "# PBRForge configuration",
+            "# Written by `pbrforge config --set`; edit by hand or rewrite with --set.",
+            "",
+        ]
+        for section, keys in sections:
+            lines.append(f"[{section}]")
+            for key, attr in keys:
+                lines.append(f"{key:<15} = {_fmt(getattr(self, attr))}")
+            lines.append("")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(lines), encoding="utf-8", newline="\n")
         return target
 
     def as_dict(self) -> dict[str, Any]:

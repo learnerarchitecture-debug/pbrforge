@@ -29,6 +29,7 @@ import gzip
 import json
 import mimetypes
 import os
+import re
 import socket
 import ssl
 import sys
@@ -63,6 +64,25 @@ class App:
     log_file: Path | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
     requests: int = 0
+    jobs: Any = None
+    update_info: Any = None
+    update_checked: float = 0.0
+    _update_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _update_thread: threading.Thread | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.jobs is None:
+            from ..jobs import JobManager
+            self.jobs = JobManager(self.config, workers=1)
+        if self.update_info is None:
+            from ..update import load_cached
+            self.update_info = load_cached(self._update_cache, max_age_s=24 * 3600)
+            if self.update_info is not None:
+                self.update_checked = self.update_info.checked_at
+
+    @property
+    def _update_cache(self) -> Path:
+        return Path(self.config.config_dir) / "update.json"
 
     def ping_payload(self) -> dict[str, Any]:
         cfg = self.config
@@ -74,7 +94,66 @@ class App:
             "port": cfg.serve_port,
             "auth": cfg.auth,
             "library": str(cfg.library),
+            "features": ["upload", "pbr", "library", "updates"],
         }
+
+    def update_payload(self, *, force: bool = False) -> dict[str, Any]:
+        """Cached update state; a forced call blocks and asks GitHub.
+
+        The UI calls the non-forced form on load. That is deliberately *not* a
+        network call unless the cache is empty, in which case a daemon thread
+        checks in the background and the next poll has the answer. A local tool
+        must open instantly even when the network is down.
+        """
+        from .. import update as update_mod
+        settings = {"enabled": bool(self.config.update_check),
+                    "auto_install": bool(self.config.update_auto_install),
+                    "repo": self.config.update_repo}
+        if not self.config.update_check and not force:
+            return {"current": __version__, "available": False, "error": "",
+                    **settings}
+        now = time.time()
+        info = self.update_info
+        if info is not None and not force and (now - self.update_checked) < 3600:
+            return {**info.to_dict(), **settings}
+        if force:
+            info = update_mod.check(self.config.update_repo)
+            update_mod.save_cached(self._update_cache, info)
+            self.update_info = info
+            self.update_checked = now
+            if (info.available and self.config.update_auto_install
+                    and info.asset_url and not info.error):
+                threading.Thread(target=self._auto_install, args=(info,),
+                                 daemon=True, name="pbrforge-auto-update").start()
+            return {**info.to_dict(), **settings}
+        with self._update_lock:
+            if self._update_thread is None or not self._update_thread.is_alive():
+                self._update_thread = threading.Thread(
+                    target=self._background_check, daemon=True,
+                    name="pbrforge-update-check")
+                self._update_thread.start()
+        return {"current": __version__, "checking": True,
+                "available": bool(info.available) if info else False,
+                **(info.to_dict() if info else {}), **settings}
+
+    def _background_check(self) -> None:
+        from .. import update as update_mod
+        info = update_mod.check(self.config.update_repo)
+        update_mod.save_cached(self._update_cache, info)
+        self.update_info = info
+        self.update_checked = time.time()
+        if (info.available and self.config.update_auto_install
+                and info.asset_url and not info.error):
+            self._auto_install(info)
+
+    def _auto_install(self, info: Any) -> None:
+        from .. import update as update_mod
+        try:
+            target = update_mod.install(info)
+            print(f"  update   launched {target.name}; the installer will stop "
+                  f"the server and restart it", flush=True)
+        except Exception as exc:      # noqa: BLE001 - never kill the server for an update
+            print(f"  update   auto-install failed: {exc}", flush=True)
 
     def health_payload(self) -> dict[str, Any]:
         cfg = self.config
@@ -320,6 +399,43 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, self.app.health_payload())
                 return
 
+            if path == "/api/presets":
+                self._send_json(200, self._presets_payload())
+                return
+
+            if path == "/api/jobs":
+                if method == "POST":
+                    self._handle_upload(parsed.query)
+                else:
+                    self._send_json(200, {"jobs": self.app.jobs.recent(),
+                                          "counts": self.app.jobs.counts()})
+                return
+
+            if path.startswith("/api/jobs/"):
+                self._handle_job(path, method)
+                return
+
+            if path == "/api/library":
+                self._send_json(200, {"materials": self.app.jobs.list_library()})
+                return
+
+            if path.startswith("/api/library/"):
+                self._handle_library(path)
+                return
+
+            if path == "/api/update":
+                force = "check=1" in (parsed.query or "")
+                self._send_json(200, self.app.update_payload(force=force))
+                return
+
+            if path == "/api/update/install" and method == "POST":
+                self._handle_update_install()
+                return
+
+            if path == "/api/settings" and method == "POST":
+                self._handle_settings()
+                return
+
             if path == "/api/logout":
                 self._send(200, b"unpaired\n", "text/plain",
                            extra=[("Set-Cookie",
@@ -346,6 +462,310 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     # --------------------------------------------------------------- handlers
+    @staticmethod
+    def _query_one(query: str, key: str, default: str = "") -> str:
+        values = parse_qs(query or "").get(key)
+        return values[0] if values else default
+
+    @staticmethod
+    def _bool_param(query: str, key: str, default: bool) -> bool:
+        raw = Handler._query_one(query, key, "1" if default else "0").lower()
+        return raw not in ("0", "false", "no", "off", "")
+
+    def _same_origin(self) -> bool:
+        """Reject a cross-site form post. SameSite=Lax already blocks most of it."""
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host")
+        if not origin or not host:
+            return True
+        try:
+            return urlparse(origin).netloc.lower() == host.lower()
+        except ValueError:
+            return False
+
+    def _presets_payload(self) -> dict[str, Any]:
+        from ..export import presets as preset_mod
+        items = []
+        for name in preset_mod.available():
+            try:
+                preset = preset_mod.load(name)
+            except Exception:      # noqa: BLE001 - one bad preset must not hide the rest
+                continue
+            items.append({
+                "name": preset.name,
+                "label": preset.label,
+                "target": preset.target_renderer,
+                "verified": bool(preset.verified),
+                "default": bool(preset.default),
+            })
+        return {"presets": items, "default": preset_mod.default_preset()}
+
+    def _handle_upload(self, query: str) -> None:
+        from ..core.errors import PbrForgeError
+        from ..export import presets as preset_mod
+
+        if not self._same_origin():
+            self._send_json(403, {"error": "cross-origin upload refused"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._send_json(411, {"error": "the upload has no Content-Length; "
+                                           "send the PNG bytes as the request body"})
+            return
+        limit = int(self.app.config.max_upload_mb) * 1024 * 1024
+        if length > limit:
+            self._send_json(413, {
+                "error": f"the upload is {length / 1e6:.1f} MB, above the "
+                         f"{self.app.config.max_upload_mb} MB limit",
+            })
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if ctype not in ("image/png", "application/octet-stream"):
+            self._send_json(415, {
+                "error": f"content type {ctype or '(none)'} is not accepted; "
+                         "the UI converts the image to PNG in the browser",
+            })
+            return
+        body = self.rfile.read(length)
+        if len(body) != length:
+            self._send_json(400, {"error": "the upload ended early"})
+            return
+
+        name = self._query_one(query, "name", "material")[:80]
+        source_name = self._query_one(query, "filename", "upload.png")[:160]
+        preset = self._query_one(query, "preset", self.app.config.preset)
+        try:
+            preset_mod.load(preset)
+        except PbrForgeError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        category = self._query_one(query, "category", "unknown").lower()
+        if category not in ("brick", "marble", "unknown"):
+            self._send_json(400, {"error": "category must be brick, marble or unknown"})
+            return
+        try:
+            resolution = int(self._query_one(query, "resolution", "1024"))
+        except ValueError:
+            self._send_json(400, {"error": "resolution must be an integer"})
+            return
+        resolution = max(256, min(4096, resolution))
+        metal = self._query_one(query, "metal", "auto").lower()
+        if metal not in ("auto", "none", "full"):
+            self._send_json(400, {"error": "metal must be auto, none or full"})
+            return
+        polarity = self._query_one(query, "height", "auto").lower()
+        if polarity not in ("auto", "normal", "invert"):
+            self._send_json(400, {"error": "height must be auto, normal or invert"})
+            return
+
+        try:
+            job = self.app.jobs.submit_bytes(
+                body, name=name, preset=preset, category=category,
+                resolution=resolution, metal=metal,
+                seamless=self._bool_param(query, "seamless", True),
+                delight=self._bool_param(query, "delight", True),
+                auto_levels=self._bool_param(query, "auto_levels", False),
+                white_balance=self._bool_param(query, "white_balance", False),
+                square=self._bool_param(query, "square", False),
+                height_polarity=polarity, source_name=source_name)
+        except PbrForgeError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(202, {"job": job.to_dict()})
+
+    def _handle_job(self, path: str, method: str) -> None:
+        parts = [part for part in path.strip("/").split("/") if part]
+        # api / jobs / <id> / [action] / [kind]
+        if len(parts) < 3:
+            self._send_json(404, {"error": "no job id in the path"})
+            return
+        job_id = parts[2]
+        job = self.app.jobs.get(job_id)
+        record = job.to_dict() if job is not None else self.app.jobs.find_job_record(job_id)
+        if record is None:
+            self._send_json(404, {"error": f"no job {job_id}"})
+            return
+        if len(parts) == 3:
+            self._send_json(200, record)
+            return
+
+        action = parts[3]
+        if action == "download":
+            zpath = (self.app.jobs.zip_file(job) if job is not None
+                     else (Path(record.get("zip_path")) if record.get("zip_path") else None))
+            if zpath is None or not Path(zpath).is_file():
+                self._send_json(404, {"error": "the result zip is not available yet"})
+                return
+            self._send_file(Path(zpath), download=True, head_only=(method == "HEAD"))
+            return
+
+        if action == "map" and len(parts) >= 5:
+            kind = parts[4]
+            if job is not None:
+                mpath = self.app.jobs.map_file(job, kind)
+            else:
+                folder = Path(record.get("folder") or "")
+                mpath = folder / "previews" / f"{kind}.png"
+                mpath = mpath if mpath.is_file() else None
+            if mpath is None:
+                self._send_json(404, {"error": f"no preview for {kind}"})
+                return
+            self._send_file(Path(mpath), head_only=(method == "HEAD"))
+            return
+
+        self._send_json(404, {"error": f"unknown job action {action!r}"})
+
+    @staticmethod
+    def _json_file(path: Path) -> dict[str, Any] | None:
+        if not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _handle_library(self, path: str) -> None:
+        parts = [part for part in path.strip("/").split("/") if part]
+        # api / library / <slug> / map / <kind>  or  ... / download
+        if len(parts) < 3:
+            self._send_json(404, {"error": "no library material in the path"})
+            return
+        slug = parts[2]
+        if not re.fullmatch(r"[a-z0-9_-]{1,80}", slug or ""):
+            self._send_json(404, {"error": "invalid library name"})
+            return
+        if len(parts) == 3:
+            folder = self.app.jobs.library / slug
+            if not folder.is_dir():
+                self._send_json(404, {"error": f"no library material {slug}"})
+                return
+            material = self._json_file(folder / "material.json")
+            job = self._json_file(folder / "job.json")
+            resolutions = (material or {}).get("resolutions") or []
+            edge = resolutions[-1] if resolutions else None
+            maps = []
+            for preview in sorted((folder / "previews").glob("*.png")):
+                maps.append({"kind": preview.stem, "width": edge, "height": edge,
+                             "url": f"/api/library/{slug}/map/{preview.stem}"})
+            self._send_json(200, {
+                "slug": slug,
+                "folder": str(folder),
+                "material": material,
+                "job": job,
+                "maps": maps,
+                "download": f"/api/library/{slug}/download",
+            })
+            return
+        if len(parts) < 4:
+            self._send_json(404, {"error": "no library action in the path"})
+            return
+        action = parts[3]
+        if action == "map" and len(parts) >= 5:
+            mpath = self.app.jobs.library_map(slug, parts[4])
+            if mpath is None:
+                self._send_json(404, {"error": f"no preview for {parts[4]}"})
+                return
+            self._send_file(mpath)
+            return
+        if action == "download":
+            folder = self.app.jobs.library / slug
+            zips = sorted(Path(folder).glob("PBRForge-*.zip")) if folder.is_dir() else []
+            if not zips:
+                self._send_json(404, {"error": "no zip for this material"})
+                return
+            self._send_file(zips[0], download=True)
+            return
+        self._send_json(404, {"error": f"unknown library action {action!r}"})
+
+    def _handle_update_install(self) -> None:
+        if not self._same_origin():
+            self._send_json(403, {"error": "cross-origin update refused"})
+            return
+        from .. import update as update_mod
+        info = self.app.update_info
+        if info is None or not info.available:
+            payload = self.app.update_payload(force=True)
+            info = self.app.update_info
+            if info is None or not info.available:
+                self._send_json(409, {
+                    "error": payload.get("error") or "there is no newer release",
+                })
+                return
+        if not info.asset_url:
+            self._send_json(409, {
+                "error": info.error or "the release has no Windows installer asset",
+            })
+            return
+
+        def worker() -> None:
+            time.sleep(0.8)      # let the HTTP response reach the browser first
+            try:
+                target = update_mod.install(info)
+                print(f"  update   installer started: {target}", flush=True)
+            except Exception as exc:      # noqa: BLE001 - report on the next poll
+                info.error = f"install failed: {exc}"
+                print(f"  update   install failed: {exc}", flush=True)
+
+        threading.Thread(target=worker, daemon=True,
+                         name="pbrforge-update-install").start()
+        self._send_json(202, {"started": True, "version": info.latest,
+                              "asset": info.asset_name})
+
+    def _handle_settings(self) -> None:
+        if not self._same_origin():
+            self._send_json(403, {"error": "cross-origin settings change refused"})
+            return
+        raw = self._read_body()
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (ValueError, UnicodeError):
+            self._send_json(400, {"error": "settings must be a JSON object"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "settings must be a JSON object"})
+            return
+        changed: dict[str, Any] = {}
+        if "update_check" in payload:
+            self.app.config.update_check = bool(payload["update_check"])
+            changed["update_check"] = self.app.config.update_check
+        if "update_auto_install" in payload:
+            self.app.config.update_auto_install = bool(payload["update_auto_install"])
+            changed["update_auto_install"] = self.app.config.update_auto_install
+        if not changed:
+            self._send_json(400, {"error": "no known setting was supplied"})
+            return
+        try:
+            path = self.app.config.save()
+        except OSError as exc:
+            self._send_json(500, {"error": f"could not write config: {exc}"})
+            return
+        self._send_json(200, {
+            "saved": changed,
+            "config": str(path),
+            "update_check": self.app.config.update_check,
+            "update_auto_install": self.app.config.update_auto_install,
+        })
+
+    def _send_file(self, path: Path, *, download: bool = False,
+                   head_only: bool = False) -> None:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            self._send_json(404, {"error": f"file not found: {path.name}"})
+            return
+        ctype, _ = mimetypes.guess_type(str(path))
+        ctype = ctype or "application/octet-stream"
+        extra: list[tuple[str, str]] = []
+        if download:
+            extra.append(("Content-Disposition",
+                          f'attachment; filename="{quote(path.name)}"'))
+        self._send(200, data, ctype, extra=extra,
+                   cache="private, max-age=3600", head_only=head_only)
+
     def _handle_pair(self, method: str, query: str) -> None:
         cfg = self.app.config
         if not cfg.auth:

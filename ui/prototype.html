@@ -1,1413 +1,1926 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PBRForge — UI Prototype</title>
-<!--
-  PBRForge UI prototype — the design reference for docs/UI_DESIGN.md.
-
-  This is NOT a mockup. On load it:
-    1. generates a real brick material procedurally (height field, 512x512),
-    2. derives a real tangent-space normal map from that height with a Sobel filter,
-    3. derives real AO (blurred-height occlusion) and roughness maps,
-    4. bakes a fake "photo" lighting gradient + shadow into an un-healed albedo,
-    5. uploads all six maps to WebGL and shades them with a real GGX PBR model.
-
-  Every slider therefore behaves like the shipped tool should:
-    - "Seam / de-light" blends raw photo -> healed albedo, so the seam and the baked
-      lighting appear and disappear for real, and the QC score is computed from the
-      actual wrap-boundary gradient of the textures (see QC_METRICS.md §1).
-    - The seam heat map measures the wrapped central difference of the mixed albedo,
-      exactly as specified in the pipeline docs.
-    - The green-channel flip genuinely flips the tangent-space normal.
-
-  No build step. No dependencies. Open in Chrome/Edge 113+ (WebGL2 or WebGL1).
--->
+<meta name="color-scheme" content="dark">
+<title>PBRForge · Photo to seamless PBR</title>
 <style>
-/* ============================================================================
-   DESIGN TOKENS — these are the tokens in docs/UI_DESIGN.md §3. Lift verbatim.
-   ============================================================================ */
-:root{
-  --bg-base:#0B0D10; --bg-panel:#12151A; --bg-elevated:#191D24;
-  --bg-hover:#1F242C; --bg-active:#262C36; --bg-viewport:#08090B;
+  :root {
+    --bg: #090b10;
+    --bg-2: #0e121a;
+    --panel: rgba(18, 23, 33, 0.82);
+    --panel-2: rgba(24, 31, 44, 0.72);
+    --line: rgba(255, 255, 255, 0.09);
+    --line-strong: rgba(255, 255, 255, 0.16);
+    --text: #eef2f8;
+    --muted: #98a3b6;
+    --faint: #667085;
+    --amber: #f4b25f;
+    --amber-2: #ffcf8a;
+    --teal: #4fe0c4;
+    --violet: #a99bff;
+    --coral: #ff7a7a;
+    --green: #67df9b;
+    --radius: 22px;
+    --radius-sm: 13px;
+    --shadow: 0 26px 80px rgba(0, 0, 0, 0.45);
+    --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 88px; }
+  #studio, #progressPanel, #resultPanel, #librarySec { scroll-margin-top: 88px; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--text);
+    font-family: var(--sans);
+    background:
+      radial-gradient(1100px 700px at 8% -10%, rgba(244, 178, 95, 0.14), transparent 62%),
+      radial-gradient(900px 700px at 100% 0%, rgba(79, 224, 196, 0.10), transparent 58%),
+      radial-gradient(900px 900px at 50% 120%, rgba(169, 155, 255, 0.09), transparent 60%),
+      linear-gradient(180deg, #0b0e14 0%, #080a0f 55%, #0b0d12 100%);
+    background-attachment: fixed;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.18;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse at 50% 0%, black, transparent 78%);
+  }
+  ::selection { background: rgba(244, 178, 95, 0.35); color: white; }
+  a { color: var(--amber-2); text-underline-offset: 3px; }
+  button, input, select { font: inherit; }
+  button { color: inherit; }
+  .shell { position: relative; z-index: 1; width: min(1280px, calc(100% - 40px)); margin: 0 auto; }
 
-  --border-subtle:#1C2129; --border:#242A33; --border-strong:#333B47;
+  /* ---------------------------------------------------------------- topbar */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    backdrop-filter: blur(20px) saturate(130%);
+    background: linear-gradient(180deg, rgba(9, 11, 16, 0.92), rgba(9, 11, 16, 0.62));
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+  .topbar-inner { display: flex; align-items: center; gap: 22px; height: 70px; }
+  .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text); }
+  .mark {
+    width: 34px; height: 34px; display: grid; place-items: center;
+    border-radius: 11px;
+    background: conic-gradient(from 190deg, var(--amber), #ff8d5c, var(--violet), var(--teal), var(--amber));
+    box-shadow: 0 0 26px rgba(244, 178, 95, 0.28), inset 0 0 0 1px rgba(255,255,255,0.25);
+    animation: mark-spin 14s linear infinite;
+  }
+  .mark span {
+    width: 15px; height: 15px; transform: rotate(45deg);
+    background: #0a0d12; border-radius: 3px;
+    box-shadow: inset 0 0 0 2px rgba(255,255,255,0.88);
+  }
+  @keyframes mark-spin { to { filter: hue-rotate(18deg); transform: rotate(360deg); } }
+  .brand-name { font-weight: 730; letter-spacing: -0.02em; font-size: 18px; }
+  .brand-name small { color: var(--muted); font-weight: 500; letter-spacing: 0.08em; font-size: 10px; display: block; margin-top: 1px; }
+  .nav { display: flex; align-items: center; gap: 4px; margin-left: 8px; }
+  .nav a {
+    color: var(--muted); text-decoration: none; font-size: 13px; padding: 8px 12px;
+    border-radius: 999px; transition: .18s color, .18s background;
+  }
+  .nav a:hover { color: var(--text); background: rgba(255,255,255,0.055); }
+  .top-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.03);
+    color: var(--muted); border-radius: 999px; padding: 7px 11px; font-size: 12px;
+    white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--green); box-shadow: 0 0 12px var(--green); }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+    border: 1px solid var(--line-strong); border-radius: 12px;
+    background: rgba(255,255,255,0.055); color: var(--text);
+    padding: 10px 15px; cursor: pointer; font-size: 13px; font-weight: 620;
+    transition: .18s transform, .18s background, .18s border-color, .18s box-shadow;
+    text-decoration: none;
+  }
+  .btn:hover { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.27); transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  .btn-primary {
+    border: 0; color: #171005;
+    background: linear-gradient(135deg, #ffd08c, #f3a64c 55%, #ee8a4c);
+    box-shadow: 0 12px 32px rgba(244, 178, 95, 0.25), inset 0 1px 0 rgba(255,255,255,0.55);
+  }
+  .btn-primary:hover { background: linear-gradient(135deg, #ffe0ab, #f6b25e 55%, #ff9a59); box-shadow: 0 16px 40px rgba(244, 178, 95, 0.34); }
+  .btn-ghost { background: transparent; }
+  .btn-sm { padding: 7px 11px; border-radius: 10px; font-size: 12px; }
+  .icon { width: 17px; height: 17px; flex: none; }
 
-  --text-primary:#E6E9EF; --text-secondary:#A6AEBC;
-  --text-muted:#6E7787; --text-disabled:#464D59;
+  /* ------------------------------------------------------------------ hero */
+  main { padding: 52px 0 80px; }
+  .hero { display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(430px, 1.05fr); gap: 46px; align-items: start; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 9px; color: var(--amber-2);
+    font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    border: 1px solid rgba(244, 178, 95, 0.24); background: rgba(244, 178, 95, 0.07);
+    padding: 8px 11px; border-radius: 999px;
+  }
+  .eyebrow b { color: var(--teal); font-weight: 600; }
+  h1 {
+    margin: 22px 0 18px; font-size: clamp(2.45rem, 5.2vw, 4.8rem);
+    line-height: 0.98; letter-spacing: -0.055em; font-weight: 760;
+  }
+  h1 .grad {
+    background: linear-gradient(100deg, var(--amber-2) 0%, var(--amber) 26%, var(--teal) 68%, var(--violet) 105%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { color: var(--muted); font-size: 16.5px; line-height: 1.65; max-width: 55ch; margin: 0 0 26px; }
+  .lede strong { color: var(--text); font-weight: 600; }
+  .feature-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 28px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.03);
+    border-radius: 999px; color: var(--muted); font-size: 11.5px;
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip .mini { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+  .chip:nth-child(2) .mini { background: var(--teal); }
+  .chip:nth-child(3) .mini { background: var(--violet); }
+  .hero-note {
+    border-left: 2px solid rgba(244, 178, 95, 0.55); padding: 2px 0 2px 15px;
+    color: var(--faint); font-size: 12.5px; line-height: 1.6; max-width: 52ch;
+  }
 
-  --accent:#E0A458; --accent-hover:#F0B468; --accent-active:#C88F45;
-  --accent-dim:rgba(224,164,88,.14); --accent-border:rgba(224,164,88,.35);
+  /* --------------------------------------------------------------- uploader */
+  .card {
+    position: relative; border-radius: var(--radius);
+    border: 1px solid var(--line); background: var(--panel);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.20), transparent 34%, transparent 68%, rgba(79,224,196,0.14));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  .upload-card { padding: 18px; }
+  .drop {
+    position: relative; border: 1px dashed rgba(255,255,255,0.20); border-radius: 16px;
+    min-height: 206px; display: grid; place-items: center; text-align: center;
+    padding: 24px; cursor: pointer; overflow: hidden;
+    background:
+      radial-gradient(420px 180px at 50% 0%, rgba(244,178,95,0.055), transparent 70%),
+      rgba(255,255,255,0.018);
+    transition: .22s border-color, .22s background, .22s transform;
+  }
+  .drop:hover, .drop.dragging { border-color: rgba(244,178,95,0.62); background: rgba(244,178,95,0.055); }
+  .drop.dragging { transform: scale(1.006); }
+  .drop-icon {
+    width: 54px; height: 54px; border-radius: 17px; display: grid; place-items: center;
+    margin: 0 auto 14px; color: var(--amber-2);
+    background: linear-gradient(145deg, rgba(244,178,95,0.18), rgba(79,224,196,0.08));
+    border: 1px solid rgba(244,178,95,0.24); box-shadow: 0 10px 28px rgba(0,0,0,0.28);
+  }
+  .drop h2 { margin: 0 0 7px; font-size: 18px; letter-spacing: -0.02em; }
+  .drop p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
+  .drop p b { color: var(--amber-2); font-weight: 600; }
+  .drop small { display: block; margin-top: 12px; color: var(--faint); font-size: 11px; }
+  .preview {
+    position: relative; border-radius: 16px; overflow: hidden; border: 1px solid var(--line);
+    background: #0a0d12; display: none;
+  }
+  .preview.show { display: block; }
+  .preview img { display: block; width: 100%; height: 268px; object-fit: cover; }
+  .preview::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(180deg, transparent 55%, rgba(5,7,10,0.82));
+  }
+  .preview-meta {
+    position: absolute; left: 13px; right: 13px; bottom: 11px; z-index: 1;
+    display: flex; align-items: end; justify-content: space-between; gap: 12px;
+  }
+  .preview-meta .file-name { font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preview-meta .file-info { color: var(--muted); font-size: 10.5px; font-family: var(--mono); margin-top: 3px; }
+  .replace {
+    position: absolute; top: 11px; right: 11px; z-index: 2;
+    background: rgba(6,9,13,0.72); backdrop-filter: blur(8px);
+  }
+  .form { padding: 2px 2px 0; }
+  .field { margin-top: 15px; }
+  .field > label, .field-label {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    color: var(--muted); font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    font-weight: 650; margin-bottom: 7px;
+  }
+  .field-label .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); font-size: 10.5px; }
+  input[type="text"], select {
+    width: 100%; color: var(--text); background: rgba(8,11,16,0.66);
+    border: 1px solid var(--line-strong); border-radius: 11px;
+    padding: 11px 12px; outline: none; transition: .18s border-color, .18s box-shadow;
+  }
+  input[type="text"]:focus, select:focus { border-color: rgba(244,178,95,0.65); box-shadow: 0 0 0 3px rgba(244,178,95,0.12); }
+  select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; background: rgba(7,10,14,0.55); border: 1px solid var(--line); border-radius: 11px; padding: 4px; }
+  .seg button {
+    border: 0; background: transparent; color: var(--muted); padding: 8px 4px; border-radius: 8px;
+    font-size: 11.5px; cursor: pointer; transition: .16s background, .16s color;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { background: rgba(244,178,95,0.16); color: var(--amber-2); box-shadow: inset 0 0 0 1px rgba(244,178,95,0.22); }
+  .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 15px; }
+  .toggle {
+    display: flex; align-items: center; gap: 9px; cursor: pointer; user-select: none;
+    border: 1px solid var(--line); background: rgba(255,255,255,0.025);
+    border-radius: 10px; padding: 9px 10px; color: var(--muted); font-size: 11.5px;
+    transition: .16s border-color, .16s background, .16s color;
+  }
+  .toggle:hover { border-color: var(--line-strong); color: var(--text); }
+  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
+  .switch { width: 26px; height: 15px; border-radius: 999px; background: rgba(255,255,255,0.12); position: relative; flex: none; transition: .18s background; }
+  .switch::after { content: ""; position: absolute; width: 11px; height: 11px; border-radius: 50%; top: 2px; left: 2px; background: #dfe5ee; transition: .18s left, .18s background; }
+  .toggle input:checked + .switch { background: rgba(79,224,196,0.7); }
+  .toggle input:checked + .switch::after { left: 13px; background: #062019; }
+  .toggle.checked { color: var(--text); border-color: rgba(79,224,196,0.28); background: rgba(79,224,196,0.055); }
+  .advanced { margin-top: 13px; border-top: 1px solid var(--line); padding-top: 11px; }
+  .advanced summary { cursor: pointer; color: var(--faint); font-size: 11px; list-style: none; display: flex; align-items: center; gap: 6px; }
+  .advanced summary::-webkit-details-marker { display: none; }
+  .advanced summary::before { content: "+"; color: var(--amber); font-family: var(--mono); }
+  .advanced[open] summary::before { content: "−"; }
+  .advanced .field:first-of-type { margin-top: 11px; }
+  .submit-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+  .submit-row .btn-primary { flex: 1; min-height: 47px; font-size: 13.5px; }
+  .privacy { margin: 11px 2px 0; color: var(--faint); font-size: 10.5px; line-height: 1.55; display: flex; gap: 7px; }
+  .privacy svg { flex: none; margin-top: 1px; color: var(--teal); }
 
-  --ai:#A78BFA; --ai-dim:rgba(167,139,250,.14); --ai-border:rgba(167,139,250,.35);
+  /* --------------------------------------------------------------- progress */
+  .progress-panel { margin-top: 50px; display: none; }
+  .progress-panel.show { display: block; animation: rise .45s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+  .progress-grid { display: grid; grid-template-columns: 220px 1fr; gap: 28px; padding: 26px; align-items: center; }
+  .ring-wrap { display: grid; place-items: center; }
+  .ring {
+    --p: 0; width: 168px; height: 168px; border-radius: 50%;
+    background: conic-gradient(var(--amber) calc(var(--p) * 1turn), rgba(255,255,255,0.075) 0);
+    display: grid; place-items: center; position: relative;
+    box-shadow: 0 0 55px rgba(244,178,95,0.12);
+    transition: background .35s linear;
+  }
+  .ring::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #0d1118; border: 1px solid var(--line); }
+  .ring-inner { position: relative; text-align: center; }
+  .ring-inner b { font-size: 37px; letter-spacing: -0.05em; font-weight: 740; display: block; line-height: 1; }
+  .ring-inner span { font-family: var(--mono); color: var(--muted); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; display: block; margin-top: 7px; }
+  .progress-copy h2 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.03em; }
+  .progress-copy .stage-line { color: var(--amber-2); font-family: var(--mono); font-size: 11.5px; min-height: 18px; }
+  .progress-copy .message { color: var(--muted); font-size: 12.5px; line-height: 1.55; min-height: 20px; margin: 8px 0 14px; }
+  .bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0%; border-radius: inherit; background: linear-gradient(90deg, var(--amber), var(--teal)); transition: width .35s linear; }
+  .log { margin-top: 14px; display: grid; gap: 5px; max-height: 112px; overflow: hidden; }
+  .log div { font-family: var(--mono); font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log div:first-child { color: var(--muted); }
+  .progress-meta { display: flex; gap: 16px; color: var(--faint); font-size: 10.5px; margin-top: 12px; font-family: var(--mono); }
 
-  --ok:#5FD08A; --ok-dim:rgba(95,208,138,.14);
-  --warn:#E8B65C; --warn-dim:rgba(232,182,92,.14);
-  --fail:#F2707A; --fail-dim:rgba(242,112,122,.14);
-  --info:#6BB8E8;
+  /* ----------------------------------------------------------------- result */
+  .result-panel { margin-top: 54px; display: none; }
+  .result-panel.show { display: block; animation: rise .5s ease both; }
+  .result-head { display: flex; align-items: flex-start; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+  .result-head h2 { margin: 0; font-size: clamp(1.6rem, 3vw, 2.5rem); letter-spacing: -0.045em; line-height: 1.05; }
+  .result-sub { color: var(--muted); font-size: 12.5px; margin-top: 7px; font-family: var(--mono); }
+  .result-actions { margin-left: auto; display: flex; gap: 9px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 680; letter-spacing: .03em; border: 1px solid transparent;
+  }
+  .badge.pass { color: #9df3c0; background: rgba(103,223,155,0.10); border-color: rgba(103,223,155,0.25); }
+  .badge.warn { color: #ffd08a; background: rgba(244,178,95,0.10); border-color: rgba(244,178,95,0.26); }
+  .badge.fail { color: #ffb0b0; background: rgba(255,122,122,0.10); border-color: rgba(255,122,122,0.28); }
+  .badge.neutral { color: var(--muted); background: rgba(255,255,255,0.04); border-color: var(--line); }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 9px; margin-bottom: 16px; }
+  .stat { padding: 13px 14px; border-radius: 14px; background: rgba(255,255,255,0.028); border: 1px solid var(--line); }
+  .stat b { display: block; font-size: 22px; letter-spacing: -0.04em; font-weight: 720; line-height: 1; }
+  .stat span { display: block; color: var(--faint); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin-top: 6px; }
+  .result-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr); gap: 14px; }
+  .viewer-card { padding: 13px; }
+  .viewer-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tab {
+    border: 1px solid transparent; background: transparent; color: var(--faint);
+    border-radius: 8px; padding: 6px 9px; font-size: 11px; cursor: pointer; transition: .15s;
+  }
+  .tab:hover { color: var(--text); background: rgba(255,255,255,0.045); }
+  .tab.on { color: var(--amber-2); background: rgba(244,178,95,0.10); border-color: rgba(244,178,95,0.18); }
+  .viewer-tools { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  .checkline { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 10.5px; cursor: pointer; }
+  .checkline input { accent-color: var(--amber); }
+  .stage {
+    position: relative; border-radius: 13px; overflow: hidden; background: #080b10;
+    border: 1px solid var(--line); min-height: 410px;
+  }
+  #viewerCanvas { display: block; width: 100%; height: 410px; cursor: crosshair; touch-action: none; }
+  .map-image { position: absolute; inset: 0; background-repeat: repeat; background-position: center; background-size: 50% 50%; transition: background-size .2s; }
+  .map-image.one { background-size: contain; background-repeat: no-repeat; }
+  .stage-caption {
+    position: absolute; left: 11px; bottom: 11px; z-index: 2;
+    background: rgba(5,8,12,0.72); border: 1px solid var(--line); backdrop-filter: blur(9px);
+    border-radius: 9px; padding: 6px 9px; color: var(--muted); font-family: var(--mono); font-size: 9.5px;
+    pointer-events: none;
+  }
+  .stage-hint {
+    position: absolute; right: 11px; top: 11px; z-index: 2;
+    color: var(--faint); font-size: 10px; background: rgba(5,8,12,0.55); padding: 5px 8px; border-radius: 7px;
+    backdrop-filter: blur(8px); pointer-events: none;
+  }
+  .side-card { padding: 15px; }
+  .side-card h3 { margin: 0 0 11px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  .map-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .map-card {
+    border: 1px solid var(--line); background: rgba(6,9,13,0.62); border-radius: 10px;
+    padding: 0; overflow: hidden; text-align: left; cursor: pointer; transition: .16s border-color, .16s transform;
+  }
+  .map-card:hover { border-color: rgba(244,178,95,0.4); transform: translateY(-1px); }
+  .map-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #05070a; }
+  .map-card .cap { padding: 7px 8px 8px; }
+  .map-card .cap b { display: block; font-size: 10.5px; font-weight: 620; text-transform: capitalize; }
+  .map-card .cap span { display: block; font-family: var(--mono); color: var(--faint); font-size: 8.5px; margin-top: 2px; }
+  .notes { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .notes h4 { margin: 0 0 7px; font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); }
+  .note-line { color: var(--muted); font-size: 10.5px; line-height: 1.5; margin: 0 0 5px; padding-left: 11px; position: relative; }
+  .note-line::before { content: "·"; position: absolute; left: 0; color: var(--amber); }
+  .note-line.warn::before { content: "!"; color: var(--coral); font-family: var(--mono); }
+  .pathline { margin-top: 10px; display: flex; gap: 7px; align-items: center; }
+  .pathline code { flex: 1; font-family: var(--mono); font-size: 9px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: rgba(255,255,255,0.025); padding: 7px 8px; border-radius: 7px; border: 1px solid var(--line); }
 
-  --map-albedo:#E8A0A0; --map-height:#B0B8C4; --map-normal:#8FB8E8;
-  --map-roughness:#D6C08A; --map-metallic:#C8C8D0; --map-ao:#9CBFA0;
+  /* ---------------------------------------------------------------- library */
+  .section-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 64px 0 18px; }
+  .section-head h2 { margin: 0; font-size: clamp(1.5rem, 3vw, 2.3rem); letter-spacing: -0.045em; }
+  .section-head p { margin: 7px 0 0; color: var(--muted); font-size: 12.5px; }
+  .library-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .mat-card {
+    border: 1px solid var(--line); border-radius: 16px; background: var(--panel-2); overflow: hidden;
+    transition: .2s transform, .2s border-color, .2s box-shadow;
+  }
+  .mat-card:hover { transform: translateY(-3px); border-color: rgba(244,178,95,0.32); box-shadow: 0 20px 46px rgba(0,0,0,0.34); }
+  .mat-thumb { position: relative; aspect-ratio: 4 / 3; background: #080b0f; overflow: hidden; }
+  .mat-thumb img { width: 100%; height: 100%; object-fit: cover; transition: .4s transform; }
+  .mat-card:hover .mat-thumb img { transform: scale(1.045); }
+  .mat-thumb .badge { position: absolute; top: 9px; right: 9px; backdrop-filter: blur(8px); }
+  .mat-body { padding: 11px 12px 12px; }
+  .mat-body b { display: block; font-size: 13px; letter-spacing: -0.015em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mat-body .meta { color: var(--faint); font-family: var(--mono); font-size: 9.5px; margin-top: 4px; }
+  .mat-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .mat-actions .btn { flex: 1; padding: 7px 8px; font-size: 10.5px; }
+  .empty {
+    grid-column: 1 / -1; border: 1px dashed var(--line-strong); border-radius: 16px; padding: 42px 20px;
+    text-align: center; color: var(--faint); font-size: 12.5px;
+  }
+  .empty b { display: block; color: var(--muted); font-size: 14px; margin-bottom: 5px; }
 
-  --font-ui:"Inter","Segoe UI Variable",system-ui,-apple-system,sans-serif;
-  --font-num:"JetBrains Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
+  /* ---------------------------------------------------------------- footer */
+  footer { border-top: 1px solid var(--line); padding: 24px 0 34px; color: var(--faint); font-size: 11px; }
+  .foot-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+  .foot-row .sep { color: #333b49; }
+  .foot-links { display: flex; gap: 15px; }
+  .foot-links a { color: var(--muted); text-decoration: none; }
+  .foot-links a:hover { color: var(--text); }
 
-  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px; --s-6:32px;
+  /* --------------------------------------------------------------- overlays */
+  .banner {
+    display: none; margin-top: 16px; border-radius: 14px; padding: 13px 15px;
+    border: 1px solid rgba(244,178,95,0.28); background: linear-gradient(100deg, rgba(244,178,95,0.12), rgba(169,155,255,0.07));
+    align-items: center; gap: 12px;
+  }
+  .banner.show { display: flex; }
+  .banner .grow { flex: 1; }
+  .banner b { font-size: 12.5px; }
+  .banner p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  dialog {
+    border: 1px solid var(--line-strong); border-radius: 18px; background: #10151d; color: var(--text);
+    padding: 0; width: min(560px, calc(100vw - 36px)); box-shadow: 0 40px 120px rgba(0,0,0,0.65);
+  }
+  dialog::backdrop { background: rgba(4,6,9,0.72); backdrop-filter: blur(6px); }
+  .dialog-head { display: flex; align-items: center; gap: 12px; padding: 17px 18px; border-bottom: 1px solid var(--line); }
+  .dialog-head h3 { margin: 0; font-size: 16px; letter-spacing: -0.02em; }
+  .dialog-head .close { margin-left: auto; background: transparent; border: 0; color: var(--faint); cursor: pointer; font-size: 20px; line-height: 1; padding: 3px 7px; }
+  .dialog-body { padding: 18px; max-height: min(70vh, 620px); overflow: auto; }
+  .dialog-body p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .dialog-body h4 { margin: 18px 0 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--faint); }
+  .release-notes { white-space: pre-wrap; font-size: 11.5px; line-height: 1.55; color: var(--muted); background: rgba(255,255,255,0.025); border: 1px solid var(--line); border-radius: 10px; padding: 11px; max-height: 190px; overflow: auto; }
+  .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+  .setting-row:last-child { border-bottom: 0; }
+  .setting-row b { display: block; font-size: 12px; }
+  .setting-row span { display: block; color: var(--faint); font-size: 10.5px; margin-top: 3px; }
+  .setting-row input { width: 17px; height: 17px; accent-color: var(--amber); }
+  .dialog-foot { display: flex; align-items: center; gap: 9px; padding: 14px 18px; border-top: 1px solid var(--line); }
+  .dialog-foot .grow { flex: 1; }
+  .lightbox { width: min(1000px, calc(100vw - 30px)); }
+  .lightbox .dialog-body { padding: 10px; }
+  .lightbox img { width: 100%; max-height: 76vh; object-fit: contain; border-radius: 10px; background: #070a0e; }
+  .toast {
+    position: fixed; right: 22px; bottom: 22px; z-index: 100; max-width: min(440px, calc(100vw - 40px));
+    background: #141a23; border: 1px solid var(--line-strong); border-radius: 12px;
+    box-shadow: 0 22px 60px rgba(0,0,0,0.5); padding: 12px 14px; color: var(--text);
+    font-size: 12px; line-height: 1.5; opacity: 0; transform: translateY(12px); pointer-events: none;
+    transition: .22s opacity, .22s transform;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.error { border-color: rgba(255,122,122,0.4); }
+  .error-box {
+    border: 1px solid rgba(255,122,122,0.35); background: rgba(255,122,122,0.07);
+    border-radius: 12px; padding: 12px 13px; color: #ffc0c0; font-size: 12px; line-height: 1.55;
+    white-space: pre-wrap; margin-top: 12px;
+  }
+  .error-box b { display: block; color: #ffd5d5; margin-bottom: 5px; }
+  .spinner { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,0.2); border-top-color: var(--amber); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none !important; }
+  .fade-in { animation: rise .4s ease both; }
 
-  --r-sm:4px; --r-md:6px; --r-lg:10px; --r-full:999px;
-
-  --shadow-pop:0 12px 32px rgba(0,0,0,.6),0 0 0 1px var(--border);
-  --shadow-focus:0 0 0 2px var(--bg-base),0 0 0 4px var(--accent);
-
-  --dur-instant:80ms; --dur-fast:140ms; --dur-base:220ms;
-  --ease-out:cubic-bezier(.22,1,.36,1);
-}
-
-*{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
-body{
-  background:var(--bg-base); color:var(--text-primary);
-  font:400 13px/18px var(--font-ui);
-  overflow:hidden; -webkit-font-smoothing:antialiased;
-}
-button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
-::selection{background:var(--accent-dim)}
-.mono{font-family:var(--font-num);font-variant-numeric:tabular-nums}
-
-/* ---------- App shell ---------------------------------------------------- */
-#app{display:grid;height:100vh;
-  grid-template-rows:56px 1fr 28px;
-  grid-template-columns:240px 1fr 300px;
-  grid-template-areas:"top top top" "left center right" "status status status";}
-
-/* ---------- Top bar ------------------------------------------------------ */
-#top{grid-area:top;display:flex;align-items:center;gap:var(--s-4);
-  padding:0 var(--s-4);background:var(--bg-panel);border-bottom:1px solid var(--border)}
-.brand{display:flex;align-items:center;gap:var(--s-2);font-weight:600;letter-spacing:-.01em}
-.brand .glyph{width:18px;height:18px;border-radius:var(--r-sm);
-  background:linear-gradient(135deg,var(--accent),var(--accent-active));
-  display:grid;place-items:center;font-size:11px;color:#1a1206;font-weight:800}
-.file{display:flex;align-items:center;gap:var(--s-2);color:var(--text-secondary);
-  padding:5px 10px;border-radius:var(--r-md);border:1px solid transparent}
-.file:hover{background:var(--bg-hover);border-color:var(--border)}
-.file b{color:var(--text-primary);font-weight:500}
-.spacer{flex:1}
-.pill{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:var(--r-full);
-  border:1px solid var(--border);background:var(--bg-elevated);font-size:12px;white-space:nowrap}
-.pill .k{color:var(--text-muted)}
-.btn{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--r-md);
-  background:var(--bg-elevated);border:1px solid var(--border);
-  transition:background var(--dur-instant),border-color var(--dur-instant)}
-.btn:hover{background:var(--bg-hover);border-color:var(--border-strong)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1206;font-weight:600}
-.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
-.btn:focus-visible{outline:none;box-shadow:var(--shadow-focus)}
-
-/* ---------- Columns ------------------------------------------------------ */
-#left,#right{background:var(--bg-panel);overflow-y:auto;overflow-x:hidden}
-#left{grid-area:left;border-right:1px solid var(--border)}
-#right{grid-area:right;border-left:1px solid var(--border)}
-#center{grid-area:center;display:flex;flex-direction:column;min-width:0;background:var(--bg-base)}
-
-.sect{padding:var(--s-3) var(--s-3) var(--s-2)}
-.sect+.sect{border-top:1px solid var(--border-subtle)}
-.cap{font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-  color:var(--text-muted);margin-bottom:var(--s-2);display:flex;align-items:center;gap:6px}
-.cap .n{margin-left:auto;color:var(--text-disabled);letter-spacing:0;text-transform:none;font-size:10px}
-
-/* ---------- Map stack ---------------------------------------------------- */
-.maprow{display:flex;align-items:center;gap:var(--s-2);padding:6px;border-radius:var(--r-md);
-  cursor:pointer;border:1px solid transparent;transition:background var(--dur-instant)}
-.maprow:hover{background:var(--bg-hover)}
-.maprow.on{background:var(--bg-active);border-color:var(--border)}
-.maprow.solo{border-color:var(--accent-border);background:var(--accent-dim)}
-.maprow canvas{width:44px;height:44px;border-radius:var(--r-sm);flex:none;
-  image-rendering:auto;background:#000;border:1px solid var(--border-subtle)}
-.maprow .meta{flex:1;min-width:0}
-.maprow .nm{font-size:12px;font-weight:500;display:flex;align-items:center;gap:5px}
-.maprow .badges{display:flex;gap:4px;margin-top:3px;flex-wrap:wrap}
-.badge{font-size:9px;font-weight:600;letter-spacing:.03em;padding:1px 5px;border-radius:3px;
-  border:1px solid var(--border);color:var(--text-muted);background:var(--bg-elevated);
-  white-space:nowrap}
-.badge.data{color:var(--warn);border-color:rgba(232,182,92,.28);background:var(--warn-dim)}
-.badge.srgb{color:var(--ok);border-color:rgba(95,208,138,.28);background:var(--ok-dim)}
-.badge.b16{color:var(--info);border-color:rgba(107,184,232,.28)}
-.badge.ai{color:var(--ai);border-color:var(--ai-border);background:var(--ai-dim)}
-.eye{width:18px;height:18px;flex:none;display:grid;place-items:center;border-radius:3px;
-  color:var(--text-muted);font-size:11px}
-.eye:hover{background:var(--bg-elevated);color:var(--text-primary)}
-.dot{width:6px;height:6px;border-radius:50%;flex:none}
-
-/* ---------- Viewport ----------------------------------------------------- */
-#vtools{display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-3);
-  border-bottom:1px solid var(--border);background:var(--bg-panel);flex-wrap:wrap}
-.seg{display:flex;background:var(--bg-elevated);border:1px solid var(--border);
-  border-radius:var(--r-full);padding:2px}
-.seg button{padding:4px 11px;border-radius:var(--r-full);font-size:11px;font-weight:500;
-  color:var(--text-secondary);transition:background var(--dur-instant),color var(--dur-instant)}
-.seg button:hover{color:var(--text-primary)}
-.seg button.on{background:var(--bg-active);color:var(--text-primary)}
-.seg button.on.heat{background:var(--fail-dim);color:var(--fail)}
-.seg.alt button.on{background:var(--accent-dim);color:var(--accent)}
-#stage{position:relative;flex:1;min-height:0;background:var(--bg-viewport)}
-#gl{position:absolute;inset:0;width:100%;height:100%;display:block}
-.hud{position:absolute;pointer-events:none;font-size:11px;color:var(--text-muted)}
-.hud.tl{top:10px;left:12px}
-.hud.tr{top:10px;right:12px;text-align:right}
-.hud.bl{bottom:10px;left:12px}
-.hud b{color:var(--text-secondary);font-weight:500}
-.heatlegend{position:absolute;left:12px;bottom:34px;display:none;align-items:center;gap:8px;
-  font-size:10px;color:var(--text-muted);background:rgba(11,13,16,.8);
-  padding:5px 9px;border-radius:var(--r-md);border:1px solid var(--border)}
-.heatlegend.on{display:flex}
-.heatbar{width:110px;height:6px;border-radius:3px;
-  background:linear-gradient(90deg,#1a0b0d,#7a1f18,#ff4d38,#ffd9a0)}
-
-/* ---------- Right panel controls ---------------------------------------- */
-.ctl{padding:2px 0 10px}
-.ctl .row{display:flex;align-items:baseline;gap:var(--s-2);margin-bottom:2px}
-.ctl .lab{font-size:12px;color:var(--text-secondary);flex:1}
-.ctl .val{font-family:var(--font-num);font-size:11px;color:var(--text-primary)}
-.ctl input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:18px;
-  background:transparent;cursor:grab}
-.ctl input[type=range]:active{cursor:grabbing}
-.ctl input[type=range]::-webkit-slider-runnable-track{height:3px;border-radius:2px;
-  background:var(--bg-active)}
-.ctl input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
-  margin-top:-5px;border-radius:50%;background:var(--accent);border:2px solid var(--bg-panel);
-  transition:transform var(--dur-instant)}
-.ctl input[type=range]:hover::-webkit-slider-thumb{transform:scale(1.15)}
-.ctl input[type=range]:focus-visible{outline:none}
-.ctl input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:var(--shadow-focus)}
-.ctl.ai input[type=range]::-webkit-slider-thumb{background:var(--ai)}
-select{width:100%;padding:5px 8px;border-radius:var(--r-md);background:var(--bg-elevated);
-  border:1px solid var(--border);color:var(--text-primary);font:inherit;font-size:12px}
-select:focus-visible{outline:none;box-shadow:var(--shadow-focus)}
-.tog{display:flex;align-items:center;gap:var(--s-2);padding:5px 0;cursor:pointer;font-size:12px;
-  color:var(--text-secondary)}
-.tog:hover{color:var(--text-primary)}
-.sw{width:26px;height:15px;border-radius:var(--r-full);background:var(--bg-active);flex:none;
-  position:relative;transition:background var(--dur-fast)}
-.sw::after{content:"";position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;
-  background:var(--text-muted);transition:transform var(--dur-fast),background var(--dur-fast)}
-.tog.on .sw{background:var(--accent-dim)}
-.tog.on .sw::after{transform:translateX(11px);background:var(--accent)}
-.tog.ai.on .sw{background:var(--ai-dim)}
-.tog.ai.on .sw::after{background:var(--ai)}
-.hint{font-size:10.5px;line-height:15px;color:var(--text-muted);margin-top:6px;
-  padding:7px 9px;border-radius:var(--r-md);background:var(--bg-elevated);
-  border-left:2px solid var(--border-strong)}
-.hint.warn{border-left-color:var(--warn);color:#cbb389}
-.hint.ai{border-left-color:var(--ai);color:#b6a2e8}
-
-/* ---------- Pipeline timeline ------------------------------------------- */
-.stage{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:var(--r-sm);
-  font-size:11.5px}
-.stage:hover{background:var(--bg-hover)}
-.stage .st{width:13px;text-align:center;font-size:10px;flex:none}
-.stage .t{margin-left:auto;font-family:var(--font-num);font-size:10px;color:var(--text-disabled)}
-.stage.done .st{color:var(--ok)}
-.stage.run  .st{color:var(--accent)}
-.stage.stale .st{color:var(--warn)}
-.stage.wait .st,.stage.wait .nm{color:var(--text-disabled)}
-.stage .nm{color:var(--text-secondary)}
-
-/* ---------- Status bar --------------------------------------------------- */
-#status{grid-area:status;display:flex;align-items:center;gap:var(--s-4);padding:0 var(--s-4);
-  background:var(--bg-panel);border-top:1px solid var(--border);font-size:11px;
-  color:var(--text-muted);overflow:hidden;white-space:nowrap}
-#status .w{color:var(--warn)}
-#status .sep{color:var(--border-strong)}
-
-/* ---------- Modal -------------------------------------------------------- */
-#modal{position:fixed;inset:0;background:rgba(6,7,9,.72);display:none;
-  place-items:center;z-index:50;backdrop-filter:blur(3px)}
-#modal.on{display:grid}
-.sheet{width:min(880px,92vw);max-height:84vh;background:var(--bg-panel);
-  border:1px solid var(--border-strong);border-radius:var(--r-lg);
-  box-shadow:var(--shadow-pop);display:flex;flex-direction:column;overflow:hidden}
-.sheet header{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-4);
-  border-bottom:1px solid var(--border)}
-.sheet header h2{font-size:15px;font-weight:600}
-.sheet .body{display:grid;grid-template-columns:1fr 320px;gap:var(--s-4);padding:var(--s-4);
-  overflow-y:auto}
-.tree{font-family:var(--font-num);font-size:11.5px;line-height:20px;color:var(--text-secondary);
-  background:var(--bg-viewport);border:1px solid var(--border);border-radius:var(--r-md);
-  padding:var(--s-3);overflow-x:auto;white-space:pre}
-.tree .d{color:var(--info)}
-.tree .a{color:var(--map-albedo)} .tree .n{color:var(--map-normal)}
-.tree .r{color:var(--map-roughness)} .tree .m{color:var(--map-metallic)}
-.tree .h{color:var(--map-height)} .tree .x{color:var(--text-muted)}
-.sheet footer{display:flex;align-items:center;gap:var(--s-3);padding:var(--s-3) var(--s-4);
-  border-top:1px solid var(--border);background:var(--bg-elevated)}
-.handoff{font-size:11.5px;line-height:1.7;color:var(--text-secondary)}
-.handoff code{font-family:var(--font-num);font-size:11px;color:var(--accent)}
-.handoff .k{color:var(--text-muted)}
+  @media (max-width: 1050px) {
+    .hero { grid-template-columns: 1fr; gap: 30px; }
+    .lede { max-width: 70ch; }
+    .library-grid { grid-template-columns: repeat(3, 1fr); }
+    .result-body { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 760px) {
+    .shell { width: calc(100% - 24px); }
+    main { padding-top: 34px; }
+    .topbar-inner { height: 60px; gap: 12px; }
+    .nav { display: none; }
+    .brand-name small { display: none; }
+    h1 { font-size: clamp(2.2rem, 11vw, 3.4rem); }
+    .lede { font-size: 14.5px; }
+    .progress-grid { grid-template-columns: 1fr; gap: 18px; }
+    .ring { width: 138px; height: 138px; }
+    .ring-inner b { font-size: 30px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .stats .stat:last-child { grid-column: span 2; }
+    .library-grid { grid-template-columns: repeat(2, 1fr); }
+    .result-actions { margin-left: 0; }
+    .stage, #viewerCanvas { min-height: 310px; height: 310px; }
+    .grid-2, .toggles { grid-template-columns: 1fr; }
+    .upload-card { padding: 12px; }
+    .drop { min-height: 180px; }
+    .foot-row { align-items: flex-start; }
+  }
+  @media (max-width: 470px) {
+    .library-grid { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: 1fr 1fr; }
+    .top-actions .pill { display: none; }
+    .preview img { height: 220px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.001ms !important; }
+  }
 </style>
 </head>
 <body>
-<div id="app">
-
-  <!-- ==================== TOP BAR ==================== -->
-  <div id="top">
-    <div class="brand"><span class="glyph">◆</span> PBRForge</div>
-    <button class="file" title="Open material">▣ <b>brick_wall_red_01</b> <span style="color:var(--text-muted)">▾</span></button>
-    <div class="spacer"></div>
-    <div class="pill" id="pServer" title="Connection to the PBRForge server" style="display:none">
-      <span class="k" id="srvDot" style="color:var(--text-muted)">●</span> <span id="srvText">server</span>
+<div class="shell">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="PBRForge home">
+        <span class="mark" aria-hidden="true"><span></span></span>
+        <span class="brand-name">PBRForge<small>PHOTO → PBR</small></span>
+      </a>
+      <nav class="nav" aria-label="Sections">
+        <a href="#studio">Studio</a>
+        <a href="#librarySec">Library</a>
+        <a href="#top">How it works</a>
+      </nav>
+      <div class="top-actions">
+        <span class="pill" id="serverPill"><span class="dot"></span><span id="serverVersion">local</span></span>
+        <button class="btn btn-sm" id="updatesBtn" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+          Updates
+          <span class="badge warn hidden" id="updateDot" style="padding:3px 6px;font-size:9px">new</span>
+        </button>
+      </div>
     </div>
-    <div class="pill"><span class="k">Looks like</span> floor brick · lattice 4×8 <span style="color:var(--text-muted)">(91%)</span></div>
-    <div class="pill" id="pPreset"><span class="k">Preset</span>
-      <select id="preset" style="width:auto;padding:1px 4px;background:none;border:none;font-size:12px">
-        <option>Enscape</option><option>V-Ray 6</option><option>Corona 11</option>
-        <option>Blender 4.x</option><option>Unreal 5 ORM</option><option>glTF 2.0</option>
-      </select></div>
-    <button class="btn primary" id="btnExport">Export ▾</button>
+  </header>
+
+  <div class="banner" id="updateBanner">
+    <div class="grow">
+      <b id="updateBannerTitle">A new PBRForge release is available</b>
+      <p id="updateBannerText">Download and install it from GitHub.</p>
+    </div>
+    <button class="btn btn-primary btn-sm" id="updateInstallBanner" type="button">Install update</button>
+    <button class="btn btn-sm btn-ghost" id="updateLater" type="button">Later</button>
   </div>
 
-  <!-- ==================== LEFT: MAP STACK + PIPELINE ==================== -->
-  <div id="left">
-    <div class="sect">
-      <div class="cap">Maps <span class="n" id="mapCount">6</span></div>
-      <div id="mapStack"></div>
-      <div class="hint" style="margin-top:10px">
-        Click a map to <b style="color:var(--text-secondary)">solo</b> it in the viewport.
-        <span style="color:var(--text-disabled)">Alt+click toggles visibility.</span>
-      </div>
-    </div>
-
-    <div class="sect">
-      <div class="cap">Source</div>
-      <div class="maprow"><div class="meta">
-        <div class="nm">▣ brick_wall_red.jpg</div>
-        <div class="badges"><span class="badge">4032×3024</span><span class="badge srgb">sRGB</span>
-        <span class="badge">8-bit</span><span class="badge">1.9 px/mm</span></div>
-      </div></div>
-    </div>
-
-    <div class="sect">
-      <div class="cap">Pipeline <span class="n" id="pipelineTime"></span></div>
-      <div id="pipeline"></div>
-    </div>
-
-    <div class="sect">
-      <div class="cap">History</div>
-      <div class="stage"><span class="st" style="color:var(--accent)">●</span>
-        <span class="nm">v004 · now</span><span class="t">current</span></div>
-      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
-        <span class="nm">v003 · 14:20</span><span class="t">seam 71→94</span></div>
-      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
-        <span class="nm">v002 · 14:18</span><span class="t">delight 0.55</span></div>
-      <div class="stage"><span class="st" style="color:var(--ok)">✓</span>
-        <span class="nm">v001 · 14:12</span><span class="t">import</span></div>
-    </div>
-  </div>
-
-  <!-- ==================== CENTER: VIEWPORT ==================== -->
-  <div id="center">
-    <div id="vtools">
-      <div class="seg" id="segMode">
-        <button data-mode="0" class="on">Sphere</button>
-        <button data-mode="1">Plane</button>
-        <button data-mode="2">Floor</button>
-      </div>
-      <div class="seg" id="segTile">
-        <button data-tile="1">1×</button>
-        <button data-tile="3">3×</button>
-        <button data-tile="8" class="on">8×</button>
-      </div>
-      <div class="seg" id="segExtra">
-        <button id="btnHeat">Seam heat</button>
-        <button id="btnFlip">Flip green</button>
-        <button id="btnAB">A | B</button>
-      </div>
-      <div class="spacer"></div>
-      <span style="font-size:11px;color:var(--text-muted)">Studio</span>
-      <select id="env" style="width:120px">
-        <option>Studio</option><option>Overcast</option><option>Warm interior</option>
-        <option>Night interior</option><option>Grazing sun</option>
-      </select>
-    </div>
-
-    <div id="stage">
-      <canvas id="gl"></canvas>
-      <div class="hud tl" id="hudTL"></div>
-      <div class="hud tr" id="hudTR"></div>
-      <div class="hud bl">1×—3×—8× · <b>[ ]</b> tile · <b>1 2 3</b> view · <b>G</b> flip · <b>H</b> heat</div>
-      <div class="heatlegend" id="heatLegend">
-        <span>0</span><div class="heatbar"></div><span>high</span>
-        <span style="color:var(--text-secondary);margin-left:4px">wrapped gradient across tile edge</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== RIGHT: CONTROLS ==================== -->
-  <div id="right">
-    <div class="sect">
-      <div class="cap">Seam &amp; de-light</div>
-
-      <div class="ctl">
-        <div class="row"><span class="lab">Seam healing / de-light</span>
-          <span class="val" id="vHeal">0.00</span></div>
-        <input type="range" id="heal" min="0" max="1" step="0.01" value="0">
-      </div>
-
-      <div class="ctl">
-        <div class="row"><span class="lab">Method</span></div>
-        <select id="method">
-          <option>Auto — lattice-snap (4×8)</option>
-          <option>Lattice snap (exact)</option>
-          <option>Offset + Poisson heal</option>
-          <option>Spectral (noise-like)</option>
-          <option>Quilting (structured)</option>
-          <option>AI refinement</option>
-        </select>
-      </div>
-
-      <button class="btn" id="btnRun" style="width:100%;justify-content:center;margin-top:10px">
-        ▶ Run seamless pipeline
-      </button>
-
-      <div class="hint warn" id="hintSeam">
-        Visible seam and baked lighting. This is what tiling a raw photograph looks like.
-      </div>
-    </div>
-
-    <div class="sect">
-      <div class="cap">Relief</div>
-      <div class="ctl">
-        <div class="row"><span class="lab">Normal strength</span><span class="val" id="vRelief">1.00</span></div>
-        <input type="range" id="relief" min="0" max="3" step="0.05" value="1">
-      </div>
-      <div class="ctl">
-        <div class="row"><span class="lab">Amplitude</span><span class="val" id="vAmp">3.0 mm</span></div>
-        <input type="range" id="amp" min="0" max="20" step="0.5" value="3">
-      </div>
-      <label class="tog" id="togDisp" ><span class="sw"></span> Show as displacement</label>
-    </div>
-
-    <div class="sect">
-      <div class="cap">Surface</div>
-      <div class="ctl">
-        <div class="row"><span class="lab">Roughness</span><span class="val" id="vRough">0.80</span></div>
-        <input type="range" id="rough" min="0" max="1" step="0.01" value="0.8">
-      </div>
-      <div class="ctl">
-        <div class="row"><span class="lab">Metallic</span><span class="val" id="vMetal">0.00</span></div>
-        <input type="range" id="metal" min="0" max="1" step="0.01" value="0">
-      </div>
-      <div class="ctl">
-        <div class="row"><span class="lab">AO</span><span class="val" id="vAo">0.60</span></div>
-        <input type="range" id="ao" min="0" max="1" step="0.01" value="0.6">
-      </div>
-      <div class="hint" id="hintMetal">
-        Metallic is indistinguishable from painted or dirty metal in a photograph.
-        Classified: dielectric (0.0), 82% confidence. <b style="color:var(--text-secondary)">Set it yourself.</b>
-      </div>
-    </div>
-
-    <div class="sect">
-      <div class="cap">Viewport</div>
-      <div class="ctl">
-        <div class="row"><span class="lab">Exposure</span><span class="val" id="vExp">0.0 EV</span></div>
-        <input type="range" id="exp" min="-3" max="3" step="0.1" value="0">
-      </div>
-      <label class="tog" id="togWire"><span class="sw"></span> Lattice overlay</label>
-    </div>
-
-    <div class="sect">
-      <div class="cap">AI <span class="n">off by default</span></div>
-      <label class="tog ai" id="togAI"><span class="sw"></span> Tiling-aware upscale 2×</label>
-      <label class="tog ai" id="togSeamAI"><span class="sw"></span> AI seam refinement</label>
-      <div class="hint ai">
-        Any AI step is modelled, seeded, and labelled. It never runs in the default export path,
-        and the classical result is always one click away.
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== STATUS BAR ==================== -->
-  <div id="status">
-    <span class="mono" id="stScore"></span>
-    <span class="sep">·</span>
-    <span>texel density <b class="mono" style="color:var(--text-secondary)">1.92 px/mm</b></span>
-    <span class="sep">·</span>
-    <span>albedo mean <b class="mono" style="color:var(--text-secondary)" id="stAlbedo">—</b></span>
-    <span class="sep">·</span>
-    <span class="mono" id="stRep"></span>
-    <span class="spacer" style="flex:1"></span>
-    <span id="stWarn" class="w"></span>
-  </div>
-</div>
-
-<!-- ==================== EXPORT SHEET ==================== -->
-<div id="modal">
-  <div class="sheet">
-    <header>
-      <h2 id="mTitle">Export · Enscape</h2>
-      <div class="spacer" style="flex:1"></div>
-      <button class="btn" id="mClose">Close</button>
-    </header>
-    <div class="body">
-      <div class="tree" id="mTree"></div>
+  <main id="top">
+    <section class="hero" id="studio">
       <div>
-        <div class="cap">Wire it into Enscape</div>
-        <div class="handoff">
-          <div><span class="k">Albedo</span> → Albedo <code>_albedo_4k.png</code></div>
-          <div><span class="k">Height</span> → Height <code>_height_4k.png</code></div>
-          <div><span class="k">Roughness</span> → Roughness <code>_roughness_4k.png</code></div>
-          <div><span class="k">Metallic</span> → Metallic <code>_metallic_4k.png</code></div>
-          <div style="margin-top:10px"><span class="k">AO</span> <span style="color:var(--warn)">
-            not wired</span> — Enscape generates its own occlusion.</div>
-          <div style="margin-top:10px"><span class="k">Resolution</span> 4096 max</div>
-          <div><span class="k">Amplitude</span> <span class="mono" id="mAmp">3.0 mm</span></div>
-          <div><span class="k">Module</span> 190 mm brick · tile UVW at integer multiples</div>
-          <div style="margin-top:10px"><span class="k">Seam</span> <span class="mono" id="mSeam">—</span></div>
+        <span class="eyebrow"><b>◆</b> Local material lab <span style="color:#3a4352">/</span> no uploads leave this PC</span>
+        <h1>Turn a photo into a <span class="grad">seamless PBR</span> material.</h1>
+        <p class="lede">
+          Drop in a wall, brick, stone or tile photo. PBRForge finds the repeat,
+          heals the wrap, derives <strong>height, normal, AO, roughness and metalness</strong>,
+          audits the result, and gives you a renderer-ready set — not just a pretty preview.
+        </p>
+        <div class="feature-row">
+          <span class="chip"><span class="mini"></span><b>Wrap-aware</b> seam metric</span>
+          <span class="chip"><span class="mini"></span><b>Nine</b> export presets</span>
+          <span class="chip"><span class="mini"></span><b>Stdlib</b> portable build</span>
+        </div>
+        <p class="hero-note">
+          The seam score compares the wrap join with the texture's own strongest interior join.
+          A score of 100 means the join is no worse than what the material already contains —
+          measured, not eyeballed.
+        </p>
+      </div>
+
+      <div class="card upload-card">
+        <div class="drop" id="drop" role="button" tabindex="0" aria-label="Choose or drop an image">
+          <input id="fileInput" type="file" accept="image/*" hidden>
+          <div>
+            <div class="drop-icon" aria-hidden="true">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+            </div>
+            <h2>Drop a photo here</h2>
+            <p>or <b>choose a file</b> — JPEG, PNG, WebP, AVIF<br>HEIC works when your browser can decode it</p>
+            <small>Converted to PNG in the browser · no cloud, no account</small>
+          </div>
+        </div>
+
+        <div class="preview" id="preview">
+          <img id="previewImg" alt="Selected source preview">
+          <button class="btn btn-sm replace" id="replaceBtn" type="button">Replace</button>
+          <div class="preview-meta">
+            <div style="min-width:0">
+              <div class="file-name" id="previewName">photo.png</div>
+              <div class="file-info" id="previewInfo">—</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="form">
+          <div class="field">
+            <label for="materialName">Material name</label>
+            <input id="materialName" type="text" maxlength="80" placeholder="e.g. Red brick, weathered" value="Untitled material" autocomplete="off">
+          </div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label for="category">Material type <span class="hint">sets relief defaults</span></label>
+              <select id="category">
+                <option value="unknown">Auto / generic</option>
+                <option value="brick">Brick / masonry</option>
+                <option value="marble">Stone / tile / marble</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="preset">Export preset</label>
+              <select id="preset"><option value="generic-pbr">Generic PBR</option></select>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field-label">Working resolution <span class="hint">source is never upscaled</span></span>
+            <div class="seg" id="resolutionSeg" role="group" aria-label="Working resolution">
+              <button type="button" data-res="512">512</button>
+              <button type="button" data-res="1024" class="on" aria-pressed="true">1024</button>
+              <button type="button" data-res="2048">2048</button>
+              <button type="button" data-res="4096">4096</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label for="metal">Metalness</label>
+              <select id="metal">
+                <option value="auto">Auto — honest dielectric</option>
+                <option value="none">Dielectric (0)</option>
+                <option value="full">Metallic (1)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="heightPolarity">Height polarity</label>
+              <select id="heightPolarity">
+                <option value="auto">Auto (by material type)</option>
+                <option value="normal">Bright = high</option>
+                <option value="invert">Bright = recessed</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="advanced">
+            <details>
+              <summary>Processing controls</summary>
+              <div class="toggles" style="margin-top:12px">
+                <label class="toggle checked"><input type="checkbox" id="optSeamless" checked><span class="switch"></span>Seamless wrap</label>
+                <label class="toggle checked"><input type="checkbox" id="optDelight" checked><span class="switch"></span>Flatten lighting</label>
+                <label class="toggle"><input type="checkbox" id="optLevels"><span class="switch"></span>Auto levels</label>
+                <label class="toggle"><input type="checkbox" id="optWhite"><span class="switch"></span>Neutralise colour cast</label>
+                <label class="toggle"><input type="checkbox" id="optSquare"><span class="switch"></span>Square crop</label>
+              </div>
+              <p class="privacy" style="margin-top:11px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+                Height comes from light and colour, not a 3D scan. If the relief looks inverted,
+                change <b style="color:var(--muted);font-weight:600">Height polarity</b> — it is a real choice, not a bug.
+              </p>
+            </details>
+          </div>
+
+          <div class="submit-row">
+            <button class="btn btn-primary" id="convertBtn" type="button" disabled>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m13 2-9 12h7l-1 8 9-12h-7z"/></svg>
+              Forge PBR maps
+            </button>
+          </div>
+          <p class="privacy">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Runs on this machine. The only network call is the optional GitHub update check.
+          </p>
         </div>
       </div>
+    </section>
+
+    <section class="progress-panel" id="progressPanel" aria-live="polite">
+      <div class="card">
+        <div class="progress-grid">
+          <div class="ring-wrap">
+            <div class="ring" id="progressRing"><div class="ring-inner"><b id="progressPct">0%</b><span>forging</span></div></div>
+          </div>
+          <div class="progress-copy">
+            <h2 id="progressTitle">Forging your material</h2>
+            <div class="stage-line" id="progressStage">queued</div>
+            <div class="message" id="progressMessage">Waiting for a worker…</div>
+            <div class="bar"><i id="progressBar"></i></div>
+            <div class="progress-meta"><span id="progressElapsed">0.0 s</span><span id="progressJob">job —</span><span>you can close this tab; the job keeps running</span></div>
+            <div class="log" id="progressLog"></div>
+            <div class="error-box hidden" id="progressError"><b>Conversion stopped</b><span id="progressErrorText"></span></div>
+            <div id="progressErrorActions" class="hidden" style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn btn-sm" id="retryBtn" type="button">Try another photo</button>
+              <button class="btn btn-sm btn-ghost" id="errorDismiss" type="button">Dismiss</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="result-panel" id="resultPanel" aria-live="polite">
+      <div class="result-head">
+        <div>
+          <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:9px">
+            <span class="badge neutral" id="resultVerdict">QC —</span>
+            <span class="badge neutral" id="resultPreset">generic-pbr</span>
+          </div>
+          <h2 id="resultTitle">Material</h2>
+          <div class="result-sub" id="resultSub">—</div>
+        </div>
+        <div class="result-actions">
+          <a class="btn btn-primary" id="downloadBtn" href="#" download>
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            Download .zip
+          </a>
+          <button class="btn" id="copyFolderBtn" type="button">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            Copy folder
+          </button>
+          <button class="btn btn-ghost" id="newMaterialBtn" type="button">New material</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><b id="statSeam">—</b><span>Seam score / 100</span></div>
+        <div class="stat"><b id="statAlbedo">—</b><span>Albedo mean</span></div>
+        <div class="stat"><b id="statRough">—</b><span>Roughness mean</span></div>
+        <div class="stat"><b id="statSize">—</b><span>Working size</span></div>
+        <div class="stat"><b id="statTime">—</b><span>Forge time</span></div>
+      </div>
+
+      <div class="result-body">
+        <div class="card viewer-card">
+          <div class="viewer-top">
+            <div class="tabs" id="viewTabs" role="tablist" aria-label="Map preview"></div>
+            <div class="viewer-tools">
+              <label class="checkline"><input type="checkbox" id="tiledToggle" checked> 2×2 tile</label>
+              <button class="btn btn-sm btn-ghost" id="animateLightBtn" type="button" aria-pressed="true">Animate light</button>
+            </div>
+          </div>
+          <div class="stage" id="stage">
+            <canvas id="viewerCanvas" width="900" height="420" aria-label="Lit 3D material preview"></canvas>
+            <div class="map-image hidden" id="mapImage" aria-label="Map preview"></div>
+            <div class="stage-hint" id="stageHint">move the cursor to move the light</div>
+            <div class="stage-caption" id="stageCaption">Lit preview · drag the light</div>
+          </div>
+        </div>
+
+        <div class="card side-card">
+          <h3>Delivered maps</h3>
+          <div class="map-grid" id="mapGrid"></div>
+          <div class="notes">
+            <h4>Run notes</h4>
+            <div id="noteList"><p class="note-line">No notes.</p></div>
+            <div class="pathline">
+              <code id="folderPath">—</code>
+              <button class="btn btn-sm btn-ghost" id="copyFolderBtn2" type="button" title="Copy path">⧉</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="librarySec">
+      <div class="section-head">
+        <div>
+          <h2>Your library</h2>
+          <p>Every finished material stays on this PC, with its maps, manifest and zip.</p>
+        </div>
+        <button class="btn btn-sm" id="refreshLibrary" type="button">Refresh</button>
+      </div>
+      <div class="library-grid" id="libraryGrid">
+        <div class="empty"><b>No materials yet</b>Drop a photo above and forge the first one.</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="foot-row">
+      <div>
+        <span id="footVersion">PBRForge</span>
+        <span class="sep">·</span>
+        <span>local-first, stdlib-only portable build</span>
+        <span class="sep">·</span>
+        <span id="footLibrary">library —</span>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/learnerarchitecture-debug/pbrforge/blob/main/docs/QC_METRICS.md" target="_blank" rel="noopener">QC metrics</a>
+        <a href="https://github.com/learnerarchitecture-debug/pbrforge" target="_blank" rel="noopener">GitHub</a>
+        <a href="/pair" id="pairLink">Pair a device</a>
+        <a href="/api/logout">Unpair</a>
+      </div>
     </div>
-    <footer>
-      <span style="font-size:11.5px;color:var(--text-muted)" id="mSize"></span>
-      <div class="spacer" style="flex:1"></div>
-      <button class="btn">Copy as text</button>
-      <button class="btn primary" id="mGo">Export package</button>
-    </footer>
-  </div>
+  </footer>
 </div>
 
+<dialog id="updateDialog">
+  <div class="dialog-head">
+    <h3>Updates</h3>
+    <button class="close" type="button" data-close-dialog="updateDialog" aria-label="Close">×</button>
+  </div>
+  <div class="dialog-body">
+    <p id="updateStatus">Checking the local configuration…</p>
+    <div class="release-notes hidden" id="releaseNotes"></div>
+    <h4>Policy</h4>
+    <div class="setting-row">
+      <div><b>Check GitHub for releases</b><span>One request per day at most. No telemetry.</span></div>
+      <input type="checkbox" id="settingCheck">
+    </div>
+    <div class="setting-row">
+      <div><b>Install updates automatically</b><span>Downloads and runs the new installer silently. Off by default.</span></div>
+      <input type="checkbox" id="settingAuto">
+    </div>
+    <p style="margin-top:14px;font-size:10.5px;color:var(--faint)">
+      This is a personal LAN tool, not a service. The update check talks only to
+      <code style="font-family:var(--mono)">api.github.com</code>. If GitHub is unreachable,
+      the local build keeps working.
+    </p>
+  </div>
+  <div class="dialog-foot">
+    <button class="btn btn-sm" id="checkNowBtn" type="button">Check now</button>
+    <span class="grow"></span>
+    <button class="btn btn-sm btn-ghost" type="button" data-close-dialog="updateDialog">Close</button>
+    <button class="btn btn-primary btn-sm hidden" id="installNowBtn" type="button">Install</button>
+  </div>
+</dialog>
+
+<dialog id="lightbox" class="lightbox">
+  <div class="dialog-head">
+    <h3 id="lightboxTitle">Map</h3>
+    <label class="checkline" style="margin-left:auto"><input type="checkbox" id="lightboxTile" checked> 2×2</label>
+    <button class="close" type="button" data-close-dialog="lightbox" aria-label="Close">×</button>
+  </div>
+  <div class="dialog-body"><div id="lightboxImg" class="map-image" role="img" aria-label="Map preview" style="position:relative;height:min(70vh,680px);border-radius:10px;background-color:#070a0e"></div></div>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
 <script>
-"use strict";
-/* ============================================================================
-   1. TEXTURE GENERATION
-   Produces a genuine, periodic brick material plus a "raw photo" albedo that
-   has lighting baked in. Everything downstream is really derived from this.
-   ============================================================================ */
-
-const N = 512;                 // texture size (power of two -> mipmaps work)
-const ROWS = 6;                // brick courses per tile
-const COLS = 12;               // brick cells per row  (2 bricks per cell row)
-
-/* 32-bit integer hash -> [0,1). Math.imul keeps it in int32 range. */
-function hash2(x, y) {
-  let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
-}
-
-/* Value noise, periodic with an integer period. u,v in [0,1). */
-function vnoise(u, v, period) {
-  const x = u * period, y = v * period;
-  const i0 = Math.floor(x), j0 = Math.floor(y);
-  const fx = x - i0, fy = y - j0;
-  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
-  const i1 = (i0 + 1) % period, j1 = (j0 + 1) % period;
-  const ii = ((i0 % period) + period) % period;
-  const jj = ((j0 % period) + period) % period;
-  const a = hash2(ii, jj), b = hash2(i1, jj), c = hash2(ii, j1), d = hash2(i1, j1);
-  const top = a + (b - a) * sx, bot = c + (d - c) * sx;
-  return top + (bot - top) * sy;
-}
-
-/* Fractal sum. Each octave doubles the (integer) period, so periodicity holds. */
-function fbm(u, v, base) {
-  let s = 0, amp = 0.5, p = base, norm = 0;
-  for (let o = 0; o < 4; o++) { s += amp * vnoise(u, v, p); norm += amp; p *= 2; amp *= 0.5; }
-  return s / norm;
-}
-
-const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-
-/* Periodic running-bond brick layout. Returns mortar mask, brick id, cell coords. */
-function brick(u, v) {
-  const y = v * ROWS, row = Math.floor(y), fy = y - row;
-  const off = (row % 2) * 0.5;
-  const x = u * COLS + off, col = Math.floor(x), fx = x - col;
-  const M = 0.055;
-  const mx = sstep(0, M, fx) * sstep(0, M, 1 - fx);
-  const my = sstep(0, M * 1.5, fy) * sstep(0, M * 1.5, 1 - fy);
-  const mortar = Math.min(mx, my);
-  const cc = ((col % COLS) + COLS) % COLS, rr = ((row % ROWS) + ROWS) % ROWS;
-  return { mortar, id: hash2(cc * 7 + 1, rr * 13 + 5) };
-}
-
-function buildMaterial() {
-  const NP = N * N;
-  const H  = new Float32Array(NP);          // height      0..1
-  const AR = new Uint8ClampedArray(NP * 4); // raw albedo  (photo, lighting baked in)
-  const AH = new Uint8ClampedArray(NP * 4); // healed albedo
-  const RG = new Uint8ClampedArray(NP * 4); // roughness
-  const ha = new Float32Array(NP);          // scratch for AO
-
-  for (let y = 0; y < N; y++) {
-    for (let x = 0; x < N; x++) {
-      const u = x / N, v = y / N, i = y * N + x;
-      const b = brick(u, v), m = b.mortar, tint = b.id;
-
-      const mo = fbm(u, v, 8);        // large mottling
-      const gr = fbm(u, v, 64);       // fine grain
-      const mg = fbm(u, v, 96);       // mortar grain
-
-      /* ---- height: bricks proud, mortar recessed, plus surface grain ---- */
-      let h = 0.42 + 0.55 * m;
-      h += 0.045 * (mo - 0.5) * 2;
-      h += 0.030 * (gr - 0.5) * 2 * (0.4 + 0.6 * m);
-      h += 0.055 * (mg - 0.5) * 2 * (1 - m);
-      h += 0.020 * (tint - 0.5) * 2;
-      H[i] = Math.min(1, Math.max(0, h));
-
-      /* ---- albedo, flat-lit (the "healed" target) ---- */
-      const tv = (tint - 0.5) * 2;
-      const br = 0.60 + 0.16 * tv, bg = 0.29 + 0.075 * tv, bb = 0.235 + 0.055 * tv;
-      const mr = 0.70, mgc = 0.68, mb = 0.63;
-      const shade = (0.86 + 0.26 * mo) * (0.93 + 0.14 * gr);
-      let r = (mr + (br - mr) * m) * shade;
-      let g = (mgc + (bg - mgc) * m) * shade;
-      let bch = (mb + (bb - mb) * m) * shade;
-      /* warm/cool per-brick drift so the wall is not one colour */
-      r += 0.035 * tv * m; bch -= 0.022 * tv * m;
-
-      AH[i * 4] = r * 255; AH[i * 4 + 1] = g * 255; AH[i * 4 + 2] = bch * 255; AH[i * 4 + 3] = 255;
-
-      /* ---- "photo" lighting baked into the raw albedo ---- *
-       * A linear gradient across the frame, a soft cast shadow, and a corner
-       * falloff. Tiled, the gradient makes a visible lighting grid and the
-       * wrap produces a hard step -- exactly the problem this tool solves.   */
-      const dx = u - 0.62, dy = v - 0.55;
-      const shadow = 0.22 * (1 - sstep(0.10, 0.26, Math.hypot(dx, dy)));
-      const fall   = 0.06 * (1 - sstep(0.35, 0.85, Math.hypot(u - 0.5, v - 0.5)));
-      const light  = 0.70 + 0.44 * u + 0.10 * v - shadow - fall;
-      AR[i * 4] = r * 255 * light; AR[i * 4 + 1] = g * 255 * light;
-      AR[i * 4 + 2] = bch * 255 * light; AR[i * 4 + 3] = 255;
-
-      /* ---- roughness: mortar rougher, bricks vary, cavities rougher ---- */
-      let ro = 0.68 + 0.20 * (1 - m) + 0.10 * (gr - 0.5) * 2 + 0.06 * (tint - 0.5) * 2;
-      RG[i * 4] = RG[i * 4 + 1] = RG[i * 4 + 2] = Math.min(0.95, Math.max(0.05, ro)) * 255;
-      RG[i * 4 + 3] = 255;
-
-      ha[i] = h;
-    }
-  }
-
-  /* ---- AO: local height below the blurred neighbourhood = occluded ---- */
-  const rad = 10;
-  const blurA = wrapBlur(ha, N, rad), blurB = wrapBlur(ha, N, rad * 3);
-  const AO = new Uint8ClampedArray(NP * 4);
-  for (let i = 0; i < NP; i++) {
-    const occ = Math.max(0, blurA[i] - ha[i]) * 4.2 + Math.max(0, blurB[i] - ha[i]) * 2.4;
-    const a = Math.min(1, Math.max(0, 1 - occ * 0.9));
-    AO[i * 4] = AO[i * 4 + 1] = AO[i * 4 + 2] = a * 255; AO[i * 4 + 3] = 255;
-  }
-
-  return { H, AR, AH, RG, AO, normal: deriveNormal(H, N, 1.0) };
-}
-
-/* Separable box blur with wrap-around indices (tiling-safe). */
-function wrapBlur(src, n, r) {
-  const tmp = new Float32Array(n * n), out = new Float32Array(n * n), k = 2 * r + 1;
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      let s = 0;
-      for (let d = -r; d <= r; d++) s += src[y * n + ((x + d + n) % n)];
-      tmp[y * n + x] = s / k;
-    }
-  }
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      let s = 0;
-      for (let d = -r; d <= r; d++) s += tmp[(((y + d) % n) + n) % n * n + x];
-      out[y * n + x] = s / k;
-    }
-  }
-  return out;
-}
-
-/* Real height -> normal derivation (Sobel, wrap-around). OpenGL +Y convention. */
-function deriveNormal(H, n, strength) {
-  const out = new Uint8ClampedArray(n * n * 4);
-  const at = (x, y) => H[(((y % n) + n) % n) * n + (((x % n) + n) % n)];
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const tl = at(x - 1, y - 1), t = at(x, y - 1), tr = at(x + 1, y - 1);
-      const l = at(x - 1, y), r = at(x + 1, y);
-      const bl = at(x - 1, y + 1), bo = at(x, y + 1), brr = at(x + 1, y + 1);
-      const dx = (tr + 2 * r + brr) - (tl + 2 * l + bl);
-      const dy = (bl + 2 * bo + brr) - (tl + 2 * t + tr);
-      const s = strength * 5.0;
-      let nx = -dx * s, ny = -dy * s, nz = 1;
-      const len = Math.hypot(nx, ny, nz); nx /= len; ny /= len; nz /= len;
-      const o = (y * n + x) * 4;
-      out[o] = (nx * 0.5 + 0.5) * 255;
-      out[o + 1] = (ny * 0.5 + 0.5) * 255;
-      out[o + 2] = (nz * 0.5 + 0.5) * 255;
-      out[o + 3] = 255;
-    }
-  }
-  return out;
-}
-
-/* ============================================================================
-   2. QC — the seam metric from docs/QC_METRICS.md §1
-
-   The wrap join is compared against the joins the texture already contains:
-
-       e = wrap / p95(interior join profile)      worst of the two axes, floor 1
-
-   The first version of this compared the wrap join against the MEAN of every
-   interior join. That is a units mismatch and it fails on exactly the textures
-   this tool exists for: a brick wall has a dozen sharp mortar joints and
-   hundreds of smooth pixels between them, so the mean gets diluted to almost
-   nothing and a flawless tile scored 30/100 -- the tool crying wolf about a
-   seam that does not exist. Measuring one join against the same kind of join is
-   the fix, and it is verified in pbrforge/core/synth.py, which must agree with
-   this function exactly.
-
-   The metric measures the WRAP only. A texture spliced from two mismatched
-   halves is broken in the interior and scores 100 here.
-   ============================================================================ */
-function joinProfile(lum, n, horizontal) {
-  /* interior[k] = mean over lines of |I[line,k+1] - I[line,k]|, k = 0..n-2 */
-  const interior = new Float64Array(n - 1);
-  for (let k = 0; k < n - 1; k++) {
-    let total = 0;
-    for (let line = 0; line < n; line++) {
-      const a = horizontal ? lum[line * n + k]     : lum[k * n + line];
-      const b = horizontal ? lum[line * n + k + 1] : lum[(k + 1) * n + line];
-      total += Math.abs(a - b);
-    }
-    interior[k] = total / n;
-  }
-  /* the wrap is one more join of the same family, measured the same way */
-  let wrap = 0;
-  for (let line = 0; line < n; line++) {
-    const a = horizontal ? lum[line * n + n - 1] : lum[(n - 1) * n + line];
-    const b = horizontal ? lum[line * n]         : lum[line];
-    wrap += Math.abs(a - b);
-  }
-  return { interior, wrap: wrap / n };
-}
-
-function seamRatio(rgba, n) {
-  const lum = new Float64Array(n * n);
-  for (let p = 0; p < n * n; p++) {
-    lum[p] = 0.2126 * rgba[p * 4] + 0.7152 * rgba[p * 4 + 1] + 0.0722 * rgba[p * 4 + 2];
-  }
-  let worst = 1;                      /* a join cannot be better than seamless */
-  for (const horizontal of [true, false]) {
-    const { interior, wrap } = joinProfile(lum, n, horizontal);
-    const sorted = interior.slice().sort();          /* typed arrays sort numerically */
-    const ref = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    if (ref < 1e-6) continue;                        /* flat axis: nothing to compare */
-    worst = Math.max(worst, wrap / ref);
-  }
-  return worst;
-}
-
-/* 100 means the wrap is no worse than the texture's own strongest join;
-   50 means twice as strong; 25 means four times. No magic constants. */
-const ratioToScore = e => (e <= 1 ? 100 : Math.max(1, Math.round(100 / e)));
-
-/* ============================================================================
-   3. WEBGL PBR VIEWPORT
-   ============================================================================ */
-const VERT = `
-attribute vec2 aPos; varying vec2 vUV;
-void main(){ vUV = aPos*0.5+0.5; gl_Position = vec4(aPos,0.0,1.0); }`;
-
-const FRAG = `
-precision highp float;
-varying vec2 vUV;
-uniform vec2  uRes;
-uniform float uTiling, uHeal, uFlip, uHeat, uRelief, uRough, uMetal, uAo, uExposure, uWire;
-uniform int   uMode, uSolo;
-uniform int   uEnv;
-uniform sampler2D uAlbR, uAlbH, uNrm, uRgh, uAO, uHgt;
-
-const float PI = 3.14159265359;
-
-vec3 srgbToLin(vec3 c){ return pow(max(c,0.0), vec3(2.2)); }
-vec3 linToSrgb(vec3 c){ return pow(max(c,0.0), vec3(1.0/2.2)); }
-float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
-
-vec3 albedoAt(vec2 tu){
-  vec2 f = fract(tu);
-  vec3 a = srgbToLin(texture2D(uAlbR, f).rgb);
-  vec3 b = srgbToLin(texture2D(uAlbH, f).rgb);
-  return mix(a, b, uHeal);            /* the de-light / heal slider, for real */
-}
-
-float D_GGX(float NoH, float a){
-  float a2 = a*a;
-  float d  = NoH*NoH*(a2-1.0)+1.0;
-  return a2/max(PI*d*d, 1e-6);
-}
-float V_Smith(float NoV, float NoL, float a){
-  float a2 = a*a;
-  float gv = NoL*sqrt(NoV*NoV*(1.0-a2)+a2);
-  float gl = NoV*sqrt(NoL*NoL*(1.0-a2)+a2);
-  return 0.5/max(gv+gl, 1e-5);
-}
-vec3 F_Schlick(vec3 F0, float VoH){
-  return F0 + (1.0-F0)*pow(1.0-VoH, 5.0);
-}
-
-vec3 envLight(int i, vec3 n, vec3 r){
-  /* Five environments, hand-tuned for archviz rather than generic HDRI presets. */
-  if (i == 0) return vec3(1.0,0.97,0.92)*2.2*mix(0.6,1.0,0.5+0.5*n.y);   /* studio  */
-  if (i == 1) return vec3(0.72,0.78,0.86)*1.5*(0.5+0.5*n.y);            /* overcast*/
-  if (i == 2) return vec3(1.0,0.82,0.62)*1.7*(0.4+0.6*max(n.y,0.0));    /* warm    */
-  if (i == 3) return vec3(0.35,0.42,0.62)*0.7*(0.4+0.6*max(n.y,0.0));   /* night   */
-  return vec3(1.0,0.86,0.70)*2.6*max(n.y,0.0);                          /* grazing */
-}
-
-vec3 soloMap(vec2 tu, int m){
-  vec2 f = fract(tu);
-  if (m == 0) return texture2D(uAlbH, f).rgb;                       /* albedo (lit?)  */
-  if (m == 1) return vec3(texture2D(uHgt, f).r);                    /* height         */
-  if (m == 2) return texture2D(uNrm, f).rgb;                        /* normal         */
-  if (m == 3) return vec3(texture2D(uRgh, f).r);                    /* roughness      */
-  if (m == 4) return vec3(texture2D(uAO, f).r);                     /* ao             */
-  return vec3(0.5);
-}
-
-void main(){
-  vec2 p = (gl_FragCoord.xy*2.0 - uRes)/uRes.y;
-
-  vec3 ro, rd, Ng, T, B; vec2 uv; bool hit = true;
-  ro = vec3(0.0,0.0,3.1); T = vec3(1.0,0.0,0.0); B = vec3(0.0,1.0,0.0);
-  Ng = vec3(0.0,0.0,1.0); uv = vec2(0.5); rd = normalize(vec3(p,-1.0));
-
-  if (uMode == 0){                                  /* ---- sphere ---- */
-    ro = vec3(0.0,0.0,3.1);
-    rd = normalize(vec3(p,-2.6));
-    float b = dot(ro,rd), c = dot(ro,ro)-1.0;
-    float h = b*b-c;
-    if (h < 0.0){ hit = false; }
-    else {
-      vec3 pos = ro + rd*(-b - sqrt(h));
-      Ng = normalize(pos);
-      uv = vec2(atan(pos.z,pos.x)/(2.0*PI)+0.5, acos(clamp(pos.y,-1.0,1.0))/PI);
-      T  = normalize(cross(vec3(0.0,1.0,0.0), Ng));
-      B  = cross(Ng,T);
-    }
-  } else if (uMode == 1){                           /* ---- flat plane ---- */
-    ro = vec3(0.0,0.0,2.4);
-    rd = normalize(vec3(p,-2.6));
-    float t = -ro.z/rd.z;
-    vec3 pos = ro + rd*t;
-    Ng = vec3(0.0,0.0,1.0);
-    uv = pos.xy*0.55 + 0.5;
-    T = vec3(1.0,0.0,0.0); B = vec3(0.0,1.0,0.0);
-  } else {                                          /* ---- floor ---- */
-    ro = vec3(0.0,0.70,1.9);
-    rd = normalize(vec3(p.x*1.05,-0.55,-1.0));
-    if (rd.y >= -0.001){ hit = false; }
-    else {
-      float t = -ro.y/rd.y;
-      vec3 pos = ro + rd*t;
-      Ng = vec3(0.0,1.0,0.0);
-      uv = vec2(pos.x,pos.z)*0.42;
-      T = vec3(1.0,0.0,0.0); B = vec3(0.0,0.0,1.0);
-    }
-  }
-
-  /* ---- background: neutral gradient, deliberately boring ---- */
-  vec3 bg = mix(vec3(0.030,0.033,0.040), vec3(0.095,0.105,0.125),
-                gl_FragCoord.y/uRes.y);
-  bg *= 1.0 - 0.35*smoothstep(0.55,1.15,length(p*vec2(0.62,0.85)));
-  vec3 col = bg;
-
-  if (hit){
-    vec2 tu = uv*uTiling;
-    vec2 f  = fract(tu);
-
-    /* tangent-space normal from the derived map */
-    vec3 nt = texture2D(uNrm, f).xyz*2.0 - 1.0;
-    nt.y *= uFlip;
-    nt.xy *= uRelief;
-    nt = normalize(nt);
-    vec3 Nm = normalize(T*nt.x + B*nt.y + Ng*nt.z);
-
-    float rough = clamp(texture2D(uRgh, f).r * uRough, 0.04, 1.0);
-    float ao    = mix(1.0, texture2D(uAO, f).r, uAo);
-    vec3  alb   = albedoAt(tu);
-    float metal = uMetal;
-    float a = rough*rough;
-
-    vec3 V = -rd;
-    float NoV = max(dot(Nm,V), 1e-4);
-    vec3 F0 = mix(vec3(0.04), alb, metal);
-    vec3 kd = alb*(1.0-metal);
-
-    vec3 rad = envLight(uEnv, Nm, reflect(-V,Nm));
-    col = rad*kd*ao*0.28;                       /* rough ambient / indirect */
-
-    vec3  Ld[3];
-    vec3  Cl[3];
-    if (uEnv == 3){                             /* night interior: warm practicals */
-      Ld[0]=normalize(vec3( 0.55, 0.70, 0.55)); Cl[0]=vec3(1.00,0.80,0.55)*2.2;
-      Ld[1]=normalize(vec3(-0.70, 0.25, 0.60)); Cl[1]=vec3(0.35,0.50,0.85)*0.9;
-      Ld[2]=normalize(vec3( 0.10,-0.55,-0.60)); Cl[2]=vec3(0.45,0.42,0.40)*0.25;
-    } else if (uEnv == 4){                      /* grazing sun */
-      Ld[0]=normalize(vec3(-0.88, 0.30, 0.36)); Cl[0]=vec3(1.00,0.85,0.66)*3.4;
-      Ld[1]=normalize(vec3( 0.30, 0.70, 0.65)); Cl[1]=vec3(0.55,0.68,0.92)*0.85;
-      Ld[2]=normalize(vec3( 0.10,-0.50,-0.70)); Cl[2]=vec3(0.45,0.42,0.40)*0.30;
-    } else {                                    /* studio / overcast / warm */
-      Ld[0]=normalize(vec3( 0.55, 0.75, 0.55)); Cl[0]=vec3(1.00,0.96,0.90)*3.1;
-      Ld[1]=normalize(vec3(-0.75, 0.15, 0.55)); Cl[1]=vec3(0.45,0.60,0.90)*1.15;
-      Ld[2]=normalize(vec3( 0.10,-0.65,-0.70)); Cl[2]=vec3(0.50,0.48,0.44)*0.55;
-    }
-
-    for (int i=0;i<3;i++){
-      float NoL = max(dot(Nm, Ld[i]), 0.0);
-      if (NoL <= 0.0) continue;
-      vec3 Hv = normalize(Ld[i] + V);
-      float NoH = max(dot(Nm,Hv), 0.0);
-      float VoH = max(dot(V,Hv), 0.0);
-      vec3 F = F_Schlick(F0, VoH);
-      float spec = D_GGX(NoH,a) * V_Smith(NoV,NoL,a);
-      col += (kd/PI*ao + F*spec) * Cl[i] * NoL;
-    }
-
-    /* ---- lattice overlay: shows the detected repeat unit ---- */
-    if (uWire > 0.5){
-      float lx = smoothstep(0.985,1.0,abs(sin(f.x*PI)))*0.0;  /* placeholder */
-      float gx = min(f.x,1.0-f.x), gy = min(f.y,1.0-f.y);
-      float grid = 1.0 - smoothstep(0.0,0.010,min(gx,gy));
-      col = mix(col, vec3(0.88,0.64,0.34), grid*0.45);
-    }
-  }
-
-  /* ---- solo map view: bypass lighting entirely ---- */
-  if (hit && uSolo >= 0){
-    col = soloMap(uv*uTiling, uSolo);
-  }
-
-  /* ---- seam heat map: measured, not decorative ---- */
-  if (hit && uHeat > 0.5 && uSolo < 0){
-    float e = 0.006;
-    vec2 tu = uv*uTiling;
-    float d = abs(lum(albedoAt(tu+vec2(e,0.0))) - lum(albedoAt(tu-vec2(e,0.0))))
-            + abs(lum(albedoAt(tu+vec2(0.0,e))) - lum(albedoAt(tu-vec2(0.0,e))));
-    vec2 f = fract(tu);
-    float edge = 1.0 - smoothstep(0.0,0.06,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
-    float hot = smoothstep(0.03,0.24,d)*(0.30+0.70*edge);
-    col = mix(col, mix(vec3(0.10,0.02,0.03), vec3(1.0,0.32,0.22), hot), hot*0.88);
-  }
-
-  col *= uExposure;
-  col = col/(col+1.0);                 /* Reinhard */
-  col = linToSrgb(col);
-  col *= 1.0 - 0.28*smoothstep(0.62,1.25,length(p*vec2(0.55,0.9)));
-  gl_FragColor = vec4(col,1.0);
-}`;
-
-/* --- WebGL bootstrap ------------------------------------------------------ */
-const canvas = document.getElementById('gl');
-const gl = canvas.getContext('webgl', { antialias: true, alpha: false })
-        || canvas.getContext('experimental-webgl', { antialias: true, alpha: false });
-if (!gl) {
-  document.getElementById('stage').innerHTML =
-    '<div style="padding:32px;color:#F2707A;font:13px Inter,sans-serif">' +
-    'WebGL is unavailable in this browser. The prototype needs Chrome or Edge 113+. ' +
-    'The rest of the UI still works.</div>';
-}
-
-function compile(type, src) {
-  const s = gl.createShader(type);
-  gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
-    throw new Error(gl.getShaderInfoLog(s));
-  return s;
-}
-const prog = gl.createProgram();
-if (gl) {
-  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
-}
-
-const quad = gl.createBuffer();
-gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'aPos');
-
-const U = {};
-['uRes','uTiling','uHeal','uFlip','uHeat','uRelief','uRough','uMetal','uAo',
- 'uExposure','uWire','uMode','uSolo','uEnv',
- 'uAlbR','uAlbH','uNrm','uRgh','uAO','uHgt'].forEach(k => U[k] = gl.getUniformLocation(prog, k));
-
-/* --- upload the generated maps -------------------------------------------- */
-function makeTex(rgba, linear) {
-  const t = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, N, N, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-                new Uint8Array(rgba.buffer));
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.generateMipmap(gl.TEXTURE_2D);
-  return t;
-}
-function heightTex(H) {
-  const d = new Uint8Array(N * N * 4);
-  for (let i = 0; i < N * N; i++) {
-    const v = H[i] * 255;
-    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255;
-  }
-  return makeTex(d);
-}
-function grayTex(src) {   /* packed single channel -> rgba */
-  const d = new Uint8Array(N * N * 4);
-  for (let i = 0; i < N * N; i++) {
-    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = src[i * 4]; d[i * 4 + 3] = 255;
-  }
-  return makeTex(d);
-}
-
-const M = buildMaterial();
-const TEX = {
-  albR: makeTex(M.AR), albH: makeTex(M.AH), nrm: makeTex(M.normal),
-  rgh: grayTex(M.RG), ao: grayTex(M.AO), hgt: heightTex(M.H),
-};
-
-/* --- QC numbers from the real data --------------------------------------- */
-const eRaw    = seamRatio(M.AR, N);          /* raw photo: big boundary step */
-const eHealed = seamRatio(M.AH, N);          /* healed   : continuous        */
-const SCORE_RAW = ratioToScore(eRaw), SCORE_HEALED = ratioToScore(eHealed);
-
-/* albedo means (sRGB-weighted) */
-const meanOf = a => { let s = 0; for (let i = 0; i < N * N; i++)
-  s += 0.2126*a[i*4] + 0.7152*a[i*4+1] + 0.0722*a[i*4+2]; return s/(N*N)/255; };
-const MEAN_RAW = meanOf(M.AR), MEAN_HEALED = meanOf(M.AH);
-
-/* --- render loop ---------------------------------------------------------- */
-let state = {
-  mode: 0, tile: 8, heal: 0, heat: 0, flip: 1, relief: 1, rough: 0.8,
-  metal: 0, ao: 0.6, exp: 0, wire: 0, env: 0, solo: -1,
-};
-
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const r = canvas.getBoundingClientRect();
-  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-}
-
-function draw() {
-  if (!gl) return;
-  resize();
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.useProgram(prog);
-  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-  gl.enableVertexAttribArray(aPos);
-  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-  const bind = (unit, tex) => {
-    gl.activeTexture(gl.TEXTURE0 + unit);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-  };
-  bind(0, TEX.albR); bind(1, TEX.albH); bind(2, TEX.nrm);
-  bind(3, TEX.rgh);  bind(4, TEX.ao);   bind(5, TEX.hgt);
-
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
-  gl.uniform1f(U.uTiling, state.tile);
-  gl.uniform1f(U.uHeal, state.heal);
-  gl.uniform1f(U.uHeat, state.heat);
-  gl.uniform1f(U.uFlip, state.flip);
-  gl.uniform1f(U.uRelief, state.relief);
-  gl.uniform1f(U.uRough, state.rough);
-  gl.uniform1f(U.uMetal, state.metal);
-  gl.uniform1f(U.uAo, state.ao);
-  gl.uniform1f(U.uExposure, Math.pow(2, state.exp));
-  gl.uniform1f(U.uWire, state.wire);
-  gl.uniform1i(U.uMode, state.mode);
-  gl.uniform1i(U.uSolo, state.solo);
-  gl.uniform1i(U.uEnv, state.env);
-  gl.uniform1i(U.uAlbR, 0); gl.uniform1i(U.uAlbH, 1); gl.uniform1i(U.uNrm, 2);
-  gl.uniform1i(U.uRgh, 3);  gl.uniform1i(U.uAO, 4);   gl.uniform1i(U.uHgt, 5);
-
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-}
-
-/* ============================================================================
-   4. UI
-   ============================================================================ */
-
-/* --- map stack ------------------------------------------------------------ */
-const MAPS = [
-  { key: 'albedo',    label: 'Albedo',    tex: 'albH', sel: 0, on: true,
-    badges: ['sRGB', '8-bit'], cls: 'srgb', color: '--map-albedo' },
-  { key: 'height',    label: 'Height',    tex: 'hgt',  sel: 1, on: true,
-    badges: ['data', '16-bit'], cls: 'data', color: '--map-height' },
-  { key: 'normal',    label: 'Normal',    tex: 'nrm',  sel: 2, on: true,
-    badges: ['data', '16-bit', '+Y'], cls: 'data', color: '--map-normal' },
-  { key: 'roughness', label: 'Roughness', tex: 'rgh',  sel: 3, on: true,
-    badges: ['data', '8-bit'], cls: 'data', color: '--map-roughness' },
-  { key: 'metallic',  label: 'Metallic',  tex: null,   sel: -1, on: true,
-    badges: ['data', '8-bit', 'flat 0.0'], cls: 'data', color: '--map-metallic' },
-  { key: 'ao',        label: 'AO',        tex: 'ao',   sel: 4, on: true,
-    badges: ['data', '8-bit'], cls: 'data', color: '--map-ao' },
-];
-
-function thumbFor(key) {
-  const c = document.createElement('canvas');
-  c.width = N; c.height = N;
-  const ctx = c.getContext('2d');
-  if (key === 'metallic') {   /* flat map: render it as flat grey, which is the honest picture */
-    ctx.fillStyle = 'rgb(30,30,32)'; ctx.fillRect(0, 0, N, N);
-    return c;
-  }
-  const src = key === 'albedo' ? M.AH : key === 'height' ? M.H
-            : key === 'normal' ? M.normal : key === 'roughness' ? M.RG : M.AO;
-  const img = ctx.createImageData(N, N);
-  if (key === 'height') {
-    for (let i = 0; i < N * N; i++) {
-      const v = src[i] * 255;
-      img.data[i*4] = img.data[i*4+1] = img.data[i*4+2] = v; img.data[i*4+3] = 255;
-    }
-  } else img.data.set(src);
-  ctx.putImageData(img, 0, 0);
-  return c;
-}
-
-const stackEl = document.getElementById('mapStack');
-MAPS.forEach((m, idx) => {
-  const row = document.createElement('div');
-  row.className = 'maprow';
-  row.innerHTML =
-    `<canvas width="${N}" height="${N}" style="width:44px;height:44px"></canvas>
-     <div class="meta">
-       <div class="nm"><span class="dot" style="background:var(${m.color})"></span>${m.label}</div>
-       <div class="badges">${m.badges.map(b =>
-          `<span class="badge ${b === 'data' ? 'data' : b === 'sRGB' ? 'srgb'
-             : b === '16-bit' ? 'b16' : ''}">${b}</span>`).join('')}</div>
-     </div>
-     <span class="eye" title="toggle">◉</span>`;
-  row.querySelector('canvas').replaceWith(Object.assign(thumbFor(m.key), { style: 'width:44px;height:44px;border-radius:4px;border:1px solid var(--border-subtle);flex:none' }));
-  stackEl.appendChild(row);
-
-  const activate = (solo) => {
-    MAPS.forEach(o => o.soloOn = false);
-    if (solo) { m.soloOn = true; state.solo = m.sel; }
-    else state.solo = -1;
-    [...stackEl.children].forEach((c, i) => {
-      c.classList.toggle('solo', !!MAPS[i].soloOn);
-      c.classList.toggle('on', MAPS[i].soloOn);
+(() => {
+  "use strict";
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  function scrollToPanel(selector) {
+    // One frame later: the panel has just gained .show, and layout must settle
+    // before its offset is meaningful.
+    requestAnimationFrame(() => {
+      const panel = $(selector);
+      if (!panel) return;
+      const top = panel.getBoundingClientRect().top + window.scrollY - 88;
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
     });
-    updateQC();   /* the HUD states which map is soloed */
-    draw();
-  };
-  row.addEventListener('click', e => {
-    if (e.altKey) { m.on = !m.on; row.style.opacity = m.on ? 1 : .4; return; }
-    activate(!m.soloOn);
-  });
-});
-
-/* --- pipeline stages ------------------------------------------------------ */
-const STAGES = [
-  ['ingest',   0.4, 'done',  'sRGB 8-bit'],
-  ['preprocess',1.8, 'done',  'crop 3024²'],
-  ['lattice',  0.6, 'done',  'x4 y8 conf .91'],
-  ['seamless', 0.2, 'done',  'lattice-snap'],
-  ['delight',  0.9, 'done',  'mean restored'],
-  ['derive',   2.1, 'done',  '6 maps'],
-  ['pack',     0.6, 'done',  '5 files'],
-  ['qc',       0.3, 'stale', 'density warn'],
-];
-const pipeEl = document.getElementById('pipeline');
-STAGES.forEach(([nm, t, st, note]) => {
-  const sym = st === 'done' ? '✓' : st === 'stale' ? '!' : '○';
-  const d = document.createElement('div');
-  d.className = 'stage ' + st;
-  d.innerHTML = `<span class="st">${sym}</span><span class="nm">${nm}
-    <span style="color:var(--text-disabled)">· ${note}</span></span><span class="t">${t}s</span>`;
-  pipeEl.appendChild(d);
-});
-document.getElementById('pipelineTime').textContent =
-  STAGES.reduce((a, s) => a + s[1], 0).toFixed(1) + 's';
-
-/* --- controls ------------------------------------------------------------- */
-const $ = id => document.getElementById(id);
-function bindRange(id, key, fmt, after) {
-  const el = $(id), out = $('v' + id[0].toUpperCase() + id.slice(1));
-  const upd = () => {
-    state[key] = parseFloat(el.value);
-    if (out) out.textContent = fmt(state[key]);
-    if (after) after(state[key]);
-    draw();
-  };
-  el.addEventListener('input', upd); upd();
-}
-bindRange('heal',   'heal',   v => v.toFixed(2), updateQC);
-bindRange('relief', 'relief', v => v.toFixed(2));
-bindRange('amp',    'amp',    v => v.toFixed(1) + ' mm');
-bindRange('rough',  'rough',  v => v.toFixed(2));
-bindRange('metal',  'metal',  v => {
-  $('hintMetal').style.opacity = v > 0.02 ? '.45' : '1';
-  return v.toFixed(2);
-});
-bindRange('ao',     'ao',     v => v.toFixed(2));
-bindRange('exp',    'exp',    v => (v >= 0 ? '+' : '') + v.toFixed(1) + ' EV');
-
-$('method').addEventListener('change', e => {
-  const isAI = e.target.value.startsWith('AI');
-  const btn = $('btnRun');
-  $('method').blur();
-  animateHeal(isAI ? 0.98 : 1.0, 1100);
-  btn.textContent = isAI
-    ? '✓ AI refinement · seed 1234 · review it'
-    : '✓ seamless · ' + e.target.value.split(' —')[0];
-  setTimeout(() => { btn.textContent = '▶ Run seamless pipeline'; }, 2600);
-});
-$('env').addEventListener('change', e => { state.env = e.target.selectedIndex; draw(); });
-
-document.querySelectorAll('#segMode button').forEach(b => b.addEventListener('click', () => {
-  document.querySelectorAll('#segMode button').forEach(o => o.classList.remove('on'));
-  b.classList.add('on'); state.mode = +b.dataset.mode; draw();
-}));
-function setTile(t) {
-  state.tile = t;
-  document.querySelectorAll('#segTile button').forEach(o =>
-    o.classList.toggle('on', +o.dataset.tile === t));
-  draw(); updateQC();
-}
-document.querySelectorAll('#segTile button').forEach(b =>
-  b.addEventListener('click', () => setTile(+b.dataset.tile)));
-
-$('btnHeat').addEventListener('click', () => {
-  state.heat = state.heat > .5 ? 0 : 1;
-  $('btnHeat').classList.toggle('on', state.heat > .5);
-  $('heatLegend').classList.toggle('on', state.heat > .5);
-  draw();
-});
-$('btnFlip').addEventListener('click', () => {
-  state.flip = -state.flip;
-  $('btnFlip').classList.toggle('on', state.flip < 0);
-  /* updateQC() as well as draw(): the HUD line that names the convention
-     ("normal: OpenGL +Y" / "DirectX -Y") is written by updateQC. Without this
-     the viewport flips but the label keeps asserting the old convention, which
-     is worse than no label -- it is a confidently wrong one, and the whole
-     point of the flip is to be sure which convention is being exported. */
-  updateQC();
-  draw();
-});
-/* Apply the pipeline result IMMEDIATELY, then sweep as decoration.
-   A pipeline result must never depend on an animation frame or a timer --
-   both are throttled in background tabs, which would leave the UI showing a
-   stale score while the work is already done. The cosmetic sweep only runs
-   when the page is actually visible and is purely a visual affordance. */
-function applyHeal(v) {
-  state.heal = v; $('heal').value = v; syncHeal(); updateQC(); draw();
-}
-
-/* animateHeal -- the result is applied first and unconditionally; the sweep is
-   decoration on top of a UI that is already correct.
-
-   The previous version had a real bug worth recording. It set `state.heal = to`
-   and then called the animation's first frame *synchronously*. That first frame
-   measured k = (now - t0)/ms ~= 0 and computed v = from + (to-from)*0 = `from`,
-   so it immediately wrote the OLD value back over the new one. Clicking Run
-   showed 100 for one frame, then reverted to 47 for the entire animation and
-   only converged at the end. On a backgrounded tab, where requestAnimationFrame
-   is throttled, it could sit at 47 indefinitely -- the result was computed, and
-   the UI said nothing had happened.
-
-   Two rules now, and they are the whole fix:
-     1. Apply the final value first. Nothing below can leave it wrong.
-     2. The sweep is scheduled, never run inline, and its last frame lands
-        exactly on `to` rather than on whatever the clock happened to give. */
-function animateHeal(to, ms) {
-  const from = state.heal;
-  applyHeal(to);
-  if (ms <= 0 || Math.abs(to - from) < 1e-3) return;
-  if (document.visibilityState !== 'visible') return;
-  const t0 = performance.now();
-  const step = () => {
-    const k = Math.min(1, (performance.now() - t0) / ms);
-    applyHeal(k >= 1 ? to : from + (to - from) * (k * k * (3 - 2 * k)));
-    if (k < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
-}
-
-$('btnAB').addEventListener('click', () => {
-  /* A|B: raw photo <-> healed. An instant toggle -- this is a comparison, not a
-     transition, so there is nothing to animate and nothing to get stuck. */
-  animateHeal(state.heal > .5 ? 0 : 1, 0);
-});
-$('togWire').addEventListener('click', e => {
-  state.wire = state.wire > .5 ? 0 : 1;
-  e.currentTarget.classList.toggle('on', state.wire > .5); draw();
-});
-$('togDisp').addEventListener('click', e => {
-  e.currentTarget.classList.toggle('on');
-  state.relief = e.currentTarget.classList.contains('on') ? 2.2 : 1.0;
-  $('relief').value = state.relief; $('vRelief').textContent = state.relief.toFixed(2);
-  draw();
-});
-[['togAI'], ['togSeamAI']].forEach(([id]) => $(id).addEventListener('click', e => {
-  e.currentTarget.classList.toggle('on');
-}));
-
-$('btnRun').addEventListener('click', () => {
-  const btn = $('btnRun');
-  /* Result lands immediately; the sweep is decoration and the label timing is
-     cosmetic. Neither can leave the UI in a wrong or stuck state. */
-  animateHeal(1.0, 1100);
-  btn.textContent = '✓ seamless · lattice-snap (exact)';
-  setTimeout(() => { btn.textContent = '▶ Run seamless pipeline'; }, 2600);
-});
-
-function syncHeal() { $('vHeal').textContent = state.heal.toFixed(2); }
-
-/* --- QC readout, computed from the real textures -------------------------- */
-function updateQC() {
-  const h = state.heal;
-  const e = eRaw + (eHealed - eRaw) * h;              /* boundary error scales with heal */
-  const score = ratioToScore(e);
-  const mean  = MEAN_RAW + (MEAN_HEALED - MEAN_RAW) * h;
-
-  const cls = score >= 90 ? 'var(--ok)' : score >= 75 ? 'var(--warn)' : 'var(--fail)';
-  $('stScore').innerHTML = `<span style="color:${cls}">●</span> seam <b style="color:${cls}">${score}</b>`;
-  $('stAlbedo').textContent = mean.toFixed(2);
-
-  /* repetition is a function of tiling count: more tiles = more visible period */
-  const rep = (0.14 + 0.045 * state.tile) * (1 - 0.35 * h);
-  $('stRep').innerHTML = `repetition at ${state.tile}× ` +
-    `<b style="color:${rep > 0.45 ? 'var(--warn)' : 'var(--text-secondary)'}">${rep.toFixed(2)}</b>`;
-
-  const warn = score < 85
-    ? 'visible seam at the tile boundary — run the seamless pipeline'
-    : 'texel density 1.92 px/mm — low for close viewing';
-  $('stWarn').textContent = '⚠ ' + warn;
-
-  $('hintSeam').className = 'hint' + (score < 85 ? ' warn' : '');
-  $('hintSeam').innerHTML = score < 85
-    ? `Visible seam and baked lighting. The wrap join is <b>${e.toFixed(1)}×</b> the strength of the sharpest join already in the texture — a seam score of <b>${score}</b>.`
-    : `Seam healed. The wrap join is <b>${e.toFixed(2)}×</b> the sharpest join already in the texture, so there is nothing left to see at the boundary — a seam score of <b>${score}</b>. De-lighting also restored the albedo mean to <b>${mean.toFixed(2)}</b>.`;
-
-  $('hudTR').innerHTML =
-    `seam <b style="color:${cls}">${score}</b> · albedo <b>${mean.toFixed(2)}</b><br>` +
-    `${state.tile}× ${state.tile} tiling · ${['sphere','plane','floor'][state.mode]}` +
-    (state.flip < 0 ? '<br>normal: <b>DirectX −Y</b>' : '<br>normal: <b>OpenGL +Y</b>');
-  $('hudTL').innerHTML = state.solo >= 0
-    ? `<b style="color:var(--accent)">solo: ${MAPS.find(m => m.sel === state.solo).label}</b>` +
-      `<br><span style="color:var(--text-disabled)">click again to exit</span>`
-    : `brick_wall_red_01 · 4096² target`;
-}
-
-/* --- export sheet --------------------------------------------------------- */
-const PRESET_FILES = {
-  0: ['albedo_4k.png', 'height_4k.png', 'normal_4k.png', 'roughness_4k.png', 'metallic_4k.png'],
-  1: ['albedo_4k.png', 'height_4k.exr', 'normal_4k.png', 'roughness_4k.png', 'metallic_4k.png', 'ao_4k.png'],
-  4: ['albedo_4k.png', 'normal_4k.png', 'ORM_4k.png'],
-};
-function openExport() {
-  const p = $('preset').selectedIndex;
-  const files = PRESET_FILES[p] || PRESET_FILES[0];
-  $('mTitle').textContent = 'Export · ' + $('preset').value;
-  $('mAmp').textContent = state.amp.toFixed(1) + ' mm';
-  $('mSeam').textContent = ratioToScore(eRaw + (eHealed - eRaw) * state.heal);
-
-  const cls = f => f.includes('albedo') ? 'a' : f.includes('normal') ? 'n'
-    : f.includes('roughness') ? 'r' : f.includes('metallic') ? 'm'
-    : f.includes('height') ? 'h' : 'x';
-  const px = p === 4 ? 'T_' : '';
-  $('mTree').innerHTML =
-`<span class="d">export/enscape/</span>
-├── <span class="d">maps/</span>
-${files.map(f => `│   ├── <span class="${cls(f)}">${px}brick_wall_red_${f}</span>`).join('\n')}
-├── <span class="d">preview/</span>
-│   ├── sphere.png
-│   ├── plane_3x3.png
-│   └── roughness_sweep.png
-├── <span class="x">material.json</span>      <span class="x">pipeline_hash, params, seed, qc</span>
-├── <span class="x">README.txt</span>         <span class="x">slot assignments for Enscape</span>
-└── <span class="x">import/enscape/import-guide.html</span>`;
-  const mb = (files.length * (p === 4 ? 48 : 88) + 12);
-  $('mSize').textContent = `${files.length} maps + 3 previews + sidecar · ~${mb} MB uncompressed`;
-  $('modal').classList.add('on');
-}
-$('btnExport').addEventListener('click', openExport);
-$('mClose').addEventListener('click', () => $('modal').classList.remove('on'));
-$('mGo').addEventListener('click', () => {
-  const b = $('mGo'); b.textContent = '● writing…';
-  setTimeout(() => { b.textContent = '✓ exported'; setTimeout(() => {
-    $('modal').classList.remove('on'); b.textContent = 'Export package'; }, 900); }, 1100);
-});
-$('modal').addEventListener('click', e => { if (e.target.id === 'modal')
-  $('modal').classList.remove('on'); });
-
-/* --- keyboard ------------------------------------------------------------- */
-addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const k = e.key.toLowerCase();
-  if (k === '1' || k === '2' || k === '3') {
-    const b = document.querySelector(`#segMode button[data-mode="${+k - 1}"]`); b && b.click();
-  } else if (k === '[' || k === ']') {
-    const order = [1, 3, 8], i = order.indexOf(state.tile);
-    setTile(order[Math.max(0, Math.min(2, i + (k === ']' ? 1 : -1)))]);
-  } else if (k === 'g') $('btnFlip').click();
-  else if (k === 'h') $('btnHeat').click();
-  else if (k === 'd') $('btnAB').click();
-  else if (k === 'escape') $('modal').classList.remove('on');
-});
-
-/* --- go ------------------------------------------------------------------- */
-addEventListener('resize', draw);
-updateQC();
-draw();
-setTimeout(() => $('btnRun').focus(), 300);
-
-/* ============================================================================
-   SERVER LINK
-
-   When this page is served by `pbrforge serve`, say so in the top bar. The point
-   is not decoration: the whole multi-PC story is "one machine runs the server,
-   the others just open the URL", and the first question on a second PC is
-   whether it actually reached the server or is looking at a cached page.
-
-   Opened as a plain file (file://), there is no server and no API, so the badge
-   stays hidden rather than showing an error the user cannot act on.
-   ============================================================================ */
-(function serverLink(){
-  if (!/^https?:$/.test(location.protocol)) return;
-  const pill = $('pServer'), dot = $('srvDot'), text = $('srvText');
-  if (!pill) return;
-  pill.style.display = '';
-
-  const paint = (colour, label, title) => {
-    dot.style.color = colour; text.textContent = label;
-    pill.title = title;
+  }
+  const state = {
+    file: null,
+    previewUrl: null,
+    sourceName: "",
+    resolution: 1024,
+    job: null,
+    pollTimer: null,
+    elapsedTimer: null,
+    startedAt: 0,
+    lastMessage: "",
+    logs: [],
+    library: [],
+    presets: [],
+    update: null,
+    updatePoll: null,
+    result: null,
+    activeMap: "3d",
+    tiled: true,
+    animateLight: true,
+    viewer: null,
   };
 
-  fetch('api/health', { headers: { 'Accept': 'application/json' } })
-    .then(r => {
-      if (r.status === 401) {
-        /* Served by the server, but this browser has not paired. The server
-           sends every unpaired page to /pair, so reaching this line means
-           something is answering without a session -- say so plainly. */
-        paint('var(--warn)', 'not paired', 'This page came from a PBRForge server but this browser has no session. Open /pair and enter the pairing code.');
-        return null;
+  const STAGE_LABELS = {
+    queued: "Queued",
+    ingest: "Reading the photo",
+    preprocess: "Preparing pixels",
+    lattice: "Finding the repeat",
+    seamless: "Healing the wrap",
+    delight: "Flattening the lighting",
+    derive_height: "Building the height field",
+    derive_normal: "Deriving normals",
+    derive_ao: "Baking ambient occlusion",
+    derive_rough: "Estimating roughness",
+    derive_metal: "Deciding metalness",
+    variation: "Adding macro variation",
+    alphamatte: "Checking the alpha",
+    upscale: "Finishing detail",
+    pack: "Packing the maps",
+    qc: "Auditing the result",
+    publish: "Saving to the library",
+    done: "Done",
+  };
+
+  const MAP_LABELS = {
+    albedo: "Albedo", normal: "Normal", height: "Height", ao: "AO",
+    roughness: "Roughness", metallic: "Metallic", macro: "Macro",
+    opacity: "Opacity", cavity: "Cavity", curvature: "Curvature",
+    shading: "Shading", emissive: "Emissive",
+  };
+  const MAP_ORDER = ["albedo", "normal", "height", "ao", "roughness", "metallic", "macro", "opacity", "cavity", "curvature", "shading", "emissive"];
+
+  // ------------------------------------------------------------------ helpers
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[ch]));
+  }
+  function humanBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "—";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0; let n = bytes;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+  function seconds(value) {
+    if (!Number.isFinite(value)) return "—";
+    return value < 10 ? `${value.toFixed(1)} s` : `${Math.round(value)} s`;
+  }
+  function titleFromFile(name) {
+    const base = (name || "material").replace(/\.[^.]+$/, "").replace(/[_\-.]+/g, " ").trim();
+    const cleaned = base.replace(/\s+/g, " ").slice(0, 70);
+    if (!cleaned) return "Untitled material";
+    return cleaned.replace(/\b[a-z]/g, (m) => m.toUpperCase());
+  }
+  function verdictClass(verdict) {
+    const v = String(verdict || "").toLowerCase();
+    if (v === "pass") return "pass";
+    if (v === "warn") return "warn";
+    if (v === "fail") return "fail";
+    return "neutral";
+  }
+  function verdictLabel(verdict) {
+    const v = String(verdict || "").toLowerCase();
+    if (!v) return "QC —";
+    return `QC ${v}`;
+  }
+  function toast(message, isError = false) {
+    const el = $("#toast");
+    el.textContent = message;
+    el.classList.toggle("error", !!isError);
+    el.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => el.classList.remove("show"), 5200);
+  }
+  function authRedirect(response) {
+    if (response.status === 401) {
+      location.href = "/pair?next=" + encodeURIComponent(location.pathname + location.hash);
+      throw new Error("Not paired");
+    }
+  }
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      cache: "no-store",
+      ...options,
+      headers: { ...(options.headers || {}) },
+    });
+    authRedirect(response);
+    const type = response.headers.get("Content-Type") || "";
+    let data = null;
+    if (type.includes("application/json")) {
+      data = await response.json();
+    } else {
+      data = await response.text();
+    }
+    if (!response.ok) {
+      const message = (data && data.error) || (typeof data === "string" ? data : `HTTP ${response.status}`);
+      const error = new Error(message);
+      error.status = response.status;
+      error.payload = data;
+      throw error;
+    }
+    return data;
+  }
+
+  // --------------------------------------------------------------- source file
+  function loadImageElement(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image decode failed")); };
+      image.src = url;
+    });
+  }
+
+  async function decodeSource(file) {
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch (_) {
+      try { bitmap = await createImageBitmap(file); } catch (_) { bitmap = null; }
+    }
+    if (bitmap) {
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => { if (bitmap.close) bitmap.close(); },
+      };
+    }
+    const image = await loadImageElement(file);
+    return {
+      source: image,
+      width: image.naturalWidth || image.width,
+      height: image.naturalHeight || image.height,
+      close: () => {},
+    };
+  }
+
+  async function renderPng(file, maxEdge) {
+    const decoded = await decodeSource(file);
+    try {
+      const largest = Math.max(decoded.width, decoded.height);
+      if (!largest) throw new Error("the image has no pixels");
+      const scale = Math.min(1, maxEdge / largest);
+      const width = Math.max(1, Math.round(decoded.width * scale));
+      const height = Math.max(1, Math.round(decoded.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d", { alpha: true });
+      if (!ctx) throw new Error("this browser has no 2D canvas");
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(decoded.source, 0, 0, width, height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("the browser could not encode the PNG");
+      return { blob, width, height, originalWidth: decoded.width, originalHeight: decoded.height };
+    } finally {
+      decoded.close();
+    }
+  }
+
+  async function chooseFile(file) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      toast("That file is not an image. Choose a JPEG, PNG, WebP or AVIF.", true);
+      return;
+    }
+    if (file.size > 80 * 1024 * 1024) {
+      toast("That image is over 80 MB. Resize it first — the browser would need too much memory.", true);
+      return;
+    }
+    try {
+      const preview = await renderPng(file, 1400);
+      state.file = file;
+      state.sourceName = file.name || "photo.png";
+      if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+      state.previewUrl = URL.createObjectURL(preview.blob);
+      $("#previewImg").src = state.previewUrl;
+      $("#previewName").textContent = state.sourceName;
+      $("#previewInfo").textContent = `${preview.originalWidth}×${preview.originalHeight} source · ${humanBytes(file.size)} · PNG upload ${humanBytes(preview.blob.size)}`;
+      $("#drop").classList.add("hidden");
+      $("#preview").classList.add("show");
+      $("#materialName").value = titleFromFile(state.sourceName);
+      $("#convertBtn").disabled = false;
+      setProgressState(0, "Ready", "Choose a preset, then forge the maps.");
+      toast("Photo ready. Nothing has been sent to a server yet.");
+    } catch (error) {
+      state.file = null;
+      $("#convertBtn").disabled = true;
+      toast("This browser cannot decode that image. HEIC and TIFF often fail — export a JPEG or PNG and try again.", true);
+    }
+  }
+
+  // ------------------------------------------------------------------ presets
+  async function loadPresets() {
+    try {
+      const payload = await api("/api/presets");
+      state.presets = payload.presets || [];
+      const select = $("#preset");
+      select.innerHTML = "";
+      for (const preset of state.presets) {
+        const option = document.createElement("option");
+        option.value = preset.name;
+        option.textContent = preset.verified ? `${preset.label}` : `${preset.label} (unverified)`;
+        select.appendChild(option);
       }
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
-    .then(d => {
-      if (!d) return;
-      const secure = location.protocol === 'https:';
-      const gpu = secure ? 'WebGPU available' : 'secure origin required for WebGPU; this page is on ' + location.protocol;
-      paint('var(--ok)', d.host + ' · v' + d.version,
-            `${d.app} ${d.version} on ${d.host} (${d.platform}, Python ${d.python})\n` +
-            `library  ${d.library}\n` +
-            `uptime   ${d.uptime_s}s\n` +
-            `${gpu}`);
-    })
-    .catch(() => paint('var(--text-muted)', 'offline',
-                       'No PBRForge server answered. The page still works; results are not shared.'));
+      if (payload.default) select.value = payload.default;
+    } catch (error) {
+      // Keep the generic option. A preset fetch failure must not block conversion.
+      console.warn("presets:", error);
+    }
+  }
+
+  async function loadHealth() {
+    try {
+      const health = await api("/api/health");
+      $("#serverVersion").textContent = `v${health.version}`;
+      $("#footVersion").textContent = `PBRForge ${health.version}`;
+      $("#footLibrary").textContent = health.library || "library —";
+      $("#serverPill").title = `${health.host} · ${health.library}`;
+    } catch (_) {
+      $("#serverVersion").textContent = "offline";
+    }
+  }
+
+  // ----------------------------------------------------------------- progress
+  function setProgressState(progress, title, message, stage = "") {
+    const percent = Math.max(0, Math.min(100, Math.round(progress * 100)));
+    $("#progressPct").textContent = `${percent}%`;
+    $("#progressRing").style.setProperty("--p", String(progress));
+    $("#progressBar").style.width = `${percent}%`;
+    if (title) $("#progressTitle").textContent = title;
+    if (message) $("#progressMessage").textContent = message;
+    $("#progressStage").textContent = stage ? `${STAGE_LABELS[stage] || stage} · ${stage}` : "waiting";
+  }
+  function pushLog(message) {
+    if (!message || state.logs[0] === message) return;
+    state.logs.unshift(message);
+    state.logs = state.logs.slice(0, 6);
+    $("#progressLog").innerHTML = state.logs.map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+  }
+  function startElapsed() {
+    state.startedAt = performance.now();
+    clearInterval(state.elapsedTimer);
+    state.elapsedTimer = setInterval(() => {
+      const value = (performance.now() - state.startedAt) / 1000;
+      $("#progressElapsed").textContent = `${value.toFixed(1)} s`;
+    }, 250);
+  }
+  function stopElapsed() { clearInterval(state.elapsedTimer); state.elapsedTimer = null; }
+  function showProgress() {
+    $("#progressPanel").classList.add("show");
+    $("#resultPanel").classList.remove("show");
+    $("#progressError").classList.add("hidden");
+    $("#progressErrorActions").classList.add("hidden");
+    $("#progressLog").innerHTML = "";
+    state.logs = [];
+    startElapsed();
+    scrollToPanel("#progressPanel");
+  }
+  function failJob(job) {
+    clearTimeout(state.pollTimer);
+    stopElapsed();
+    const message = job.error || job.message || "the job failed";
+    $("#progressTitle").textContent = "Conversion stopped";
+    $("#progressStage").textContent = `${STAGE_LABELS[job.stage] || job.stage || "pipeline"} · ${job.stage || ""}`;
+    $("#progressMessage").textContent = "The job did not publish a material. Nothing was added to the library.";
+    $("#progressErrorText").textContent = message;
+    $("#progressError").classList.remove("hidden");
+    $("#progressErrorActions").classList.remove("hidden");
+    $("#progressErrorActions").style.display = "flex";
+    setProgressState(1, "Conversion stopped", "The error is from this machine; fix it and retry.", job.stage || "");
+    $("#progressRing").style.background = "conic-gradient(var(--coral) 1turn, rgba(255,255,255,0.07) 0)";
+    $("#convertBtn").disabled = !state.file;
+  }
+
+  async function pollJob(jobId) {
+    try {
+      const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+      state.job = job;
+      $("#progressJob").textContent = `job ${job.id}`;
+      const progress = Number(job.progress) || 0;
+      setProgressState(progress, "Forging your material", job.message || "working…", job.stage || "");
+      pushLog(`${job.stage || "job"}: ${job.message || ""}`);
+      if (job.state === "done") {
+        clearTimeout(state.pollTimer);
+        stopElapsed();
+        setProgressState(1, "Material forged", "Saving the result and refreshing the library…", "done");
+        await showResult(job);
+        $("#progressPanel").classList.remove("show");
+        await loadLibrary();
+        $("#convertBtn").disabled = false;
+        return;
+      }
+      if (job.state === "failed") {
+        failJob(job);
+        return;
+      }
+    } catch (error) {
+      // A transient poll failure must not kill a running local job.
+      pushLog(`progress: ${error.message} (retrying)`);
+    }
+    state.pollTimer = setTimeout(() => pollJob(jobId), 650);
+  }
+
+  async function submitJob() {
+    if (!state.file) {
+      toast("Choose a photo first.", true);
+      return;
+    }
+    const button = $("#convertBtn");
+    button.disabled = true;
+    const original = button.innerHTML;
+    button.innerHTML = `<span class="spinner"></span> Preparing the PNG…`;
+    try {
+      const maxEdge = state.resolution >= 4096 ? 4096 : 2048;
+      const rendered = await renderPng(state.file, maxEdge);
+      const params = new URLSearchParams({
+        name: ($("#materialName").value || "Untitled material").trim() || "Untitled material",
+        filename: state.sourceName || "photo.png",
+        preset: $("#preset").value || "generic-pbr",
+        category: $("#category").value || "unknown",
+        resolution: String(state.resolution),
+        metal: $("#metal").value || "auto",
+        height: $("#heightPolarity").value || "auto",
+        seamless: $("#optSeamless").checked ? "1" : "0",
+        delight: $("#optDelight").checked ? "1" : "0",
+        auto_levels: $("#optLevels").checked ? "1" : "0",
+        white_balance: $("#optWhite").checked ? "1" : "0",
+        square: $("#optSquare").checked ? "1" : "0",
+      });
+      button.innerHTML = `<span class="spinner"></span> Uploading ${humanBytes(rendered.blob.size)}…`;
+      showProgress();
+      setProgressState(0.01, "Forging your material", `Uploading ${rendered.width}×${rendered.height} PNG…`, "queued");
+      const response = await fetch(`/api/jobs?${params.toString()}`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "image/png" },
+        body: rendered.blob,
+      });
+      authRedirect(response);
+      const payload = await response.json();
+      if (!response.ok) throw new Error((payload && payload.error) || `HTTP ${response.status}`);
+      const job = payload.job;
+      state.job = job;
+      $("#progressJob").textContent = `job ${job.id}`;
+      setProgressState(0.02, "Forging your material", "Queued. The worker will decode the PNG first.", job.stage);
+      pollJob(job.id);
+    } catch (error) {
+      stopElapsed();
+      $("#progressTitle").textContent = "Could not start the job";
+      $("#progressStage").textContent = "upload";
+      $("#progressMessage").textContent = "Nothing was queued.";
+      $("#progressErrorText").textContent = error.message;
+      $("#progressError").classList.remove("hidden");
+      $("#progressErrorActions").classList.remove("hidden");
+      $("#progressErrorActions").style.display = "flex";
+      $("#progressRing").style.background = "conic-gradient(var(--coral) 1turn, rgba(255,255,255,0.07) 0)";
+      setProgressState(0, "Could not start the job", "Check the message and try again.");
+      toast(error.message, true);
+    } finally {
+      button.innerHTML = original;
+      const running = state.job && (state.job.state === "queued" || state.job.state === "running");
+      button.disabled = !state.file || !!running;
+    }
+  }
+
+  // ------------------------------------------------------------------ result
+  function normaliseResult(source, library = false) {
+    const job = source.job || source;
+    const material = source.material || {};
+    const maps = (source.maps || job.maps || []).filter((m) => m && m.url);
+    const metric = { ...(job.metrics || {}) };
+    let qc = material.qc || job.qc;
+    if (typeof qc === "string") qc = { verdict: qc, reasons: [], measured: metric };
+    if (!qc || typeof qc !== "object") qc = { verdict: "", reasons: [], measured: metric };
+    const measured = { ...(qc.measured || {}), ...metric };
+    const preset = (material.preset && (material.preset.name || material.preset)) || job.preset || "generic-pbr";
+    const working = job.working_size || (maps[0] ? [maps[0].width, maps[0].height] : []);
+    return {
+      id: job.id || "",
+      name: job.name || material.material || source.slug || "Material",
+      preset,
+      category: job.category || material.category || "unknown",
+      maps,
+      qc,
+      measured,
+      notes: job.notes || [],
+      warnings: job.warnings || [],
+      folder: job.folder || source.folder || "",
+      download: job.download || source.download || "",
+      seconds: library ? null : job.seconds,
+      working,
+      resolution: job.resolution,
+      library,
+    };
+  }
+
+  function setStat(id, value, title = "") {
+    const el = $(id);
+    el.textContent = value;
+    if (title) el.title = title;
+  }
+
+  function renderResult(result) {
+    state.result = result;
+    $("#resultPanel").classList.add("show");
+    $("#resultVerdict").className = `badge ${verdictClass(result.qc.verdict)}`;
+    $("#resultVerdict").textContent = verdictLabel(result.qc.verdict);
+    $("#resultPreset").textContent = result.preset;
+    $("#resultTitle").textContent = result.name;
+    const size = result.working && result.working.length ? `${result.working[0]}×${result.working[1]} px` : "—";
+    $("#resultSub").textContent = `${size} · ${result.maps.length} preview map${result.maps.length === 1 ? "" : "s"} · ${result.library ? "library material" : "job " + (result.id || "")}`;
+    const seam = result.measured["qc.seam_score"] ?? result.measured.seam_score;
+    setStat("#statSeam", Number.isFinite(Number(seam)) ? String(Math.round(Number(seam))) : "—", "100 = wrap join no worse than the strongest interior join");
+    const albedo = result.measured["qc.albedo_mean"] ?? result.measured.albedo_mean;
+    setStat("#statAlbedo", Number.isFinite(Number(albedo)) ? Number(albedo).toFixed(2) : "—");
+    const rough = result.measured["rough.mean"] ?? result.measured.rough_mean;
+    setStat("#statRough", Number.isFinite(Number(rough)) ? Number(rough).toFixed(2) : "—");
+    setStat("#statSize", result.working && result.working.length ? `${result.working[0]}` : "—", size);
+    setStat("#statTime", Number.isFinite(result.seconds) ? seconds(result.seconds) : "—");
+
+    $("#downloadBtn").href = result.download || "#";
+    $("#downloadBtn").classList.toggle("hidden", !result.download);
+    $("#folderPath").textContent = result.folder || "not published";
+    $("#copyFolderBtn").disabled = !result.folder;
+    $("#copyFolderBtn2").disabled = !result.folder;
+
+    const notes = [];
+    const seen = new Set();
+    const warnings = new Set(result.warnings || []);
+    for (const note of (result.notes || [])) {
+      if (note.startsWith("WARNING: ")) warnings.add(note.slice(9));
+    }
+    for (const warning of warnings) {
+      if (!seen.has(warning)) { seen.add(warning); notes.push({ text: warning, warn: true }); }
+    }
+    for (const note of (result.notes || [])) {
+      const text = note.startsWith("WARNING: ") ? note.slice(9) : note;
+      if (!seen.has(text)) { seen.add(text); notes.push({ text, warn: false }); }
+    }
+    if (result.qc.reasons && result.qc.reasons.length) {
+      for (const reason of result.qc.reasons) {
+        const text = `QC: ${reason}`;
+        if (!seen.has(text)) { seen.add(text); notes.push({ text, warn: true }); }
+      }
+    }
+    $("#noteList").innerHTML = notes.length
+      ? notes.slice(0, 8).map((note) => `<p class="note-line${note.warn ? " warn" : ""}">${escapeHtml(note.text)}</p>`).join("")
+      : `<p class="note-line">The pipeline recorded no notes.</p>`;
+
+    buildViewTabs(result.maps);
+    buildMapGrid(result.maps);
+    selectView("3d");
+    scrollToPanel("#resultPanel");
+  }
+
+  function buildViewTabs(maps) {
+    const tabs = $("#viewTabs");
+    tabs.innerHTML = `<button class="tab on" type="button" data-view="3d" role="tab">Lit 3D</button>`;
+    const ordered = MAP_ORDER.filter((kind) => maps.some((m) => m.kind === kind));
+    for (const kind of ordered) {
+      const button = document.createElement("button");
+      button.className = "tab";
+      button.type = "button";
+      button.dataset.view = kind;
+      button.setAttribute("role", "tab");
+      button.textContent = MAP_LABELS[kind] || kind;
+      tabs.appendChild(button);
+    }
+  }
+
+  function buildMapGrid(maps) {
+    const grid = $("#mapGrid");
+    grid.innerHTML = "";
+    const ordered = MAP_ORDER.filter((kind) => maps.some((m) => m.kind === kind));
+    for (const kind of ordered) {
+      const map = maps.find((m) => m.kind === kind);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "map-card";
+      button.title = `Open ${MAP_LABELS[kind] || kind} preview`;
+      button.innerHTML = `
+        <img src="${escapeHtml(map.url)}" alt="${escapeHtml(MAP_LABELS[kind] || kind)} preview" loading="lazy">
+        <div class="cap"><b>${escapeHtml(MAP_LABELS[kind] || kind)}</b><span>${map.width || "?"}×${map.height || "?"}</span></div>`;
+      button.addEventListener("click", () => {
+        selectView(kind);
+        openLightbox(kind, map.url);
+      });
+      grid.appendChild(button);
+    }
+    if (!ordered.length) grid.innerHTML = `<p class="note-line">No preview maps were written.</p>`;
+  }
+
+  function applyTiled() {
+    const image = $("#mapImage");
+    image.classList.toggle("one", !state.tiled);
+    if (state.result && state.activeMap !== "3d") {
+      const map = state.result.maps.find((m) => m.kind === state.activeMap);
+      image.style.backgroundImage = map ? `url("${map.url}")` : "";
+    }
+    $("#tiledToggle").checked = state.tiled;
+  }
+
+  function selectView(kind) {
+    state.activeMap = kind;
+    $$("#viewTabs .tab").forEach((tab) => tab.classList.toggle("on", tab.dataset.view === kind));
+    const canvas = $("#viewerCanvas");
+    const image = $("#mapImage");
+    const hint = $("#stageHint");
+    if (kind === "3d" && state.viewer && !state.viewer.gl) {
+      // WebGL failed to initialise; fall back to the albedo map rather than an
+      // empty canvas. This is the one place a visual fallback is honest.
+      const albedo = state.result?.maps.find((m) => m.kind === "albedo");
+      if (albedo) selectView("albedo");
+      return;
+    }
+    if (kind === "3d") {
+      canvas.classList.remove("hidden");
+      image.classList.add("hidden");
+      hint.textContent = "move the cursor to move the light";
+      $("#stageCaption").textContent = "Lit preview · albedo + normal + rough + AO + metal";
+      if (state.viewer) state.viewer.start();
+    } else {
+      if (state.viewer) state.viewer.pause();
+      const map = state.result?.maps.find((m) => m.kind === kind);
+      canvas.classList.add("hidden");
+      image.classList.remove("hidden");
+      image.style.backgroundImage = map ? `url("${map.url}")` : "";
+      image.classList.toggle("one", !state.tiled);
+      hint.textContent = state.tiled ? "2×2 wrap check" : "full map";
+      $("#stageCaption").textContent = `${MAP_LABELS[kind] || kind} · ${map?.width || "?"}×${map?.height || "?"} px`;
+    }
+  }
+
+  function openLightbox(kind, url) {
+    $("#lightboxTitle").textContent = MAP_LABELS[kind] || kind;
+    prepareLightbox(url, $("#lightboxTile").checked);
+    const dialog = $("#lightbox");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+  function prepareLightbox(url, tiled) {
+    const target = $("#lightboxImg");
+    target.style.backgroundImage = `url("${url}")`;
+    target.style.backgroundRepeat = tiled ? "repeat" : "no-repeat";
+    target.style.backgroundSize = tiled ? "50% 50%" : "contain";
+    target.style.backgroundPosition = "center";
+  }
+
+  // ------------------------------------------------------------------ viewer
+  class PbrViewer {
+    constructor(canvas) {
+      this.canvas = canvas;
+      this.gl = null;
+      this.program = null;
+      this.textures = [];
+      this.buffer = null;
+      this.loc = {};
+      this.maps = [];
+      this.active = false;
+      this.raf = 0;
+      this.userLight = false;
+      this.light = [0.35, 0.45];
+      this.started = performance.now();
+      this.ready = false;
+      this.init();
+    }
+    init() {
+      const gl = this.canvas.getContext("webgl", { antialias: true, alpha: false, preserveDrawingBuffer: true });
+      if (!gl) { this.fail(); return; }
+      this.gl = gl;
+      const vertex = `
+        attribute vec2 aPos;
+        varying vec2 vUv;
+        void main() {
+          vUv = aPos * 0.5 + 0.5;
+          gl_Position = vec4(aPos, 0.0, 1.0);
+        }`;
+      const fragment = `
+        precision mediump float;
+        varying vec2 vUv;
+        uniform sampler2D uAlbedo;
+        uniform sampler2D uNormal;
+        uniform sampler2D uRough;
+        uniform sampler2D uAO;
+        uniform sampler2D uMetal;
+        uniform vec2 uLight;
+        uniform float uScale;
+        vec3 srgbToLinear(vec3 c) { return pow(c, vec3(2.2)); }
+        void main() {
+          vec2 uv = fract(vUv * uScale);
+          vec3 albedo = srgbToLinear(texture2D(uAlbedo, uv).rgb);
+          vec3 n = texture2D(uNormal, uv).xyz * 2.0 - 1.0;
+          n = normalize(vec3(n.x, n.y, max(n.z, 0.08)));
+          vec3 L = normalize(vec3(uLight.x, uLight.y, 0.78));
+          vec3 V = vec3(0.0, 0.0, 1.0);
+          float rough = clamp(texture2D(uRough, uv).r, 0.03, 0.98);
+          float ao = clamp(texture2D(uAO, uv).r, 0.0, 1.0);
+          float metal = clamp(texture2D(uMetal, uv).r, 0.0, 1.0);
+          float ndl = max(dot(n, L), 0.0);
+          vec3 H = normalize(L + V);
+          float shin = mix(5.0, 160.0, 1.0 - rough);
+          float spec = pow(max(dot(n, H), 0.0), shin) * (1.0 - rough) * 0.55;
+          vec3 F0 = mix(vec3(0.04), albedo, metal);
+          vec3 diffuse = albedo * (1.0 - metal) * ndl;
+          float fres = pow(1.0 - max(dot(n, V), 0.0), 3.0);
+          vec3 color = diffuse * ao + F0 * spec * ndl * ao + F0 * fres * 0.10;
+          color += albedo * 0.028 * ao;
+          color = color / (color + vec3(1.0));
+          color = pow(max(color, 0.0), vec3(1.0 / 2.2));
+          gl_FragColor = vec4(color, 1.0);
+        }`;
+      try {
+        this.program = this.link(vertex, fragment);
+      } catch (error) {
+        console.error(error);
+        this.fail();
+        return;
+      }
+      gl.useProgram(this.program);
+      this.buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, 1, -1, -1, 1,
+        -1, 1, 1, -1, 1, 1,
+      ]), gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(this.program, "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      for (const name of ["uAlbedo", "uNormal", "uRough", "uAO", "uMetal"]) {
+        this.loc[name] = gl.getUniformLocation(this.program, name);
+      }
+      this.loc.uLight = gl.getUniformLocation(this.program, "uLight");
+      this.loc.uScale = gl.getUniformLocation(this.program, "uScale");
+      this.canvas.addEventListener("pointermove", (event) => this.onPointer(event));
+      this.canvas.addEventListener("pointerdown", (event) => this.onPointer(event));
+      new ResizeObserver(() => this.resize()).observe(this.canvas);
+      this.resize();
+    }
+    link(vertexSource, fragmentSource) {
+      const gl = this.gl;
+      const compile = (type, source) => {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader);
+          gl.deleteShader(shader);
+          throw new Error(log || "shader compile failed");
+        }
+        return shader;
+      };
+      const vertex = compile(gl.VERTEX_SHADER, vertexSource);
+      const fragment = compile(gl.FRAGMENT_SHADER, fragmentSource);
+      const program = gl.createProgram();
+      gl.attachShader(program, vertex);
+      gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      gl.deleteShader(vertex);
+      gl.deleteShader(fragment);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(program) || "shader link failed");
+      }
+      return program;
+    }
+    fail() {
+      this.gl = null;
+      this.ready = false;
+      $("#viewerCanvas").classList.add("hidden");
+      $("#mapImage").classList.remove("hidden");
+      $("#stageHint").textContent = "WebGL unavailable — showing the albedo instead";
+      if (state.result) {
+        const albedo = state.result.maps.find((m) => m.kind === "albedo");
+        if (albedo) $("#mapImage").style.backgroundImage = `url("${albedo.url}")`;
+      }
+    }
+    solid(r, g, b) {
+      const gl = this.gl;
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        new Uint8Array([r, g, b, 255]));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.textures.push(texture);
+      return texture;
+    }
+    imageTexture(url) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.crossOrigin = "anonymous";
+        image.onload = () => {
+          const gl = this.gl;
+          const texture = gl.createTexture();
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          this.textures.push(texture);
+          resolve(texture);
+        };
+        image.onerror = () => reject(new Error(`could not load ${url}`));
+        image.src = url;
+      });
+    }
+    async setMaps(maps) {
+      if (!this.gl || !this.ready) { this.ready = true; }
+      if (!this.gl) return;
+      for (const texture of this.textures) this.gl.deleteTexture(texture);
+      this.textures = [];
+      this.maps = maps;
+      const byKind = Object.fromEntries(maps.map((m) => [m.kind, m.url]));
+      const load = async (kind, fallback) => {
+        if (!byKind[kind]) return this.solid(...fallback);
+        try { return await this.imageTexture(byKind[kind]); }
+        catch (_) { return this.solid(...fallback); }
+      };
+      const [albedo, normal, rough, ao, metal] = await Promise.all([
+        load("albedo", [200, 200, 200]),
+        load("normal", [128, 128, 255]),
+        load("roughness", [180, 180, 180]),
+        load("ao", [255, 255, 255]),
+        load("metallic", [0, 0, 0]),
+      ]);
+      this.albedo = albedo; this.normal = normal; this.rough = rough; this.ao = ao; this.metal = metal;
+      this.draw();
+    }
+    onPointer(event) {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+      this.light = [x * 0.9, y * 0.8];
+      this.userLight = true;
+      this.draw();
+    }
+    resize() {
+      if (!this.gl) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+      if (this.canvas.width !== width || this.canvas.height !== height) {
+        this.canvas.width = width;
+        this.canvas.height = height;
+      }
+      this.gl.viewport(0, 0, width, height);
+      this.draw();
+    }
+    draw() {
+      const gl = this.gl;
+      if (!gl || !this.program || !this.albedo) return;
+      gl.useProgram(this.program);
+      gl.uniform2f(this.loc.uLight, this.light[0], this.light[1]);
+      gl.uniform1f(this.loc.uScale, state.tiled ? 2.0 : 1.0);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.albedo); gl.uniform1i(this.loc.uAlbedo, 0);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.normal); gl.uniform1i(this.loc.uNormal, 1);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.rough); gl.uniform1i(this.loc.uRough, 2);
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.ao); gl.uniform1i(this.loc.uAO, 3);
+      gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.metal); gl.uniform1i(this.loc.uMetal, 4);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+    tick(now) {
+      if (!this.active) return;
+      if (!this.userLight && state.animateLight) {
+        const t = (now - this.started) / 1800;
+        this.light = [Math.sin(t) * 0.62, Math.cos(t * 0.8) * 0.42 + 0.12];
+      }
+      this.draw();
+      this.raf = requestAnimationFrame((value) => this.tick(value));
+    }
+    start() {
+      if (!this.gl) return;
+      if (this.active) return;
+      this.active = true;
+      this.started = performance.now();
+      this.raf = requestAnimationFrame((value) => this.tick(value));
+    }
+    pause() {
+      this.active = false;
+      cancelAnimationFrame(this.raf);
+      this.raf = 0;
+    }
+    destroy() {
+      this.pause();
+      if (this.gl) {
+        for (const texture of this.textures) this.gl.deleteTexture(texture);
+        this.textures = [];
+        const ext = this.gl.getExtension("WEBGL_lose_context");
+        if (ext) ext.loseContext();
+      }
+      this.gl = null;
+    }
+  }
+
+  async function showResult(job) {
+    const result = normaliseResult(job);
+    state.result = result;
+    renderResult(result);
+    if (!state.viewer) state.viewer = new PbrViewer($("#viewerCanvas"));
+    if (state.viewer && state.viewer.gl) {
+      await state.viewer.setMaps(result.maps);
+      state.viewer.userLight = false;
+      state.viewer.start();
+    }
+  }
+
+  async function openLibrary(slug) {
+    try {
+      const detail = await api(`/api/library/${encodeURIComponent(slug)}`);
+      const result = normaliseResult(detail, true);
+      renderResult(result);
+      if (!state.viewer) state.viewer = new PbrViewer($("#viewerCanvas"));
+      if (state.viewer && state.viewer.gl) {
+        await state.viewer.setMaps(result.maps);
+        state.viewer.userLight = false;
+        state.viewer.start();
+      }
+      scrollToPanel("#resultPanel");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // ----------------------------------------------------------------- library
+  async function loadLibrary() {
+    try {
+      const payload = await api("/api/library");
+      state.library = (payload.materials || []).sort((a, b) => (b.created || 0) - (a.created || 0));
+      renderLibrary();
+    } catch (error) {
+      console.warn("library:", error);
+      $("#libraryGrid").innerHTML = `<div class="empty"><b>Library unavailable</b>${escapeHtml(error.message)}</div>`;
+    }
+  }
+  function renderLibrary() {
+    const grid = $("#libraryGrid");
+    if (!state.library.length) {
+      grid.innerHTML = `<div class="empty"><b>No materials yet</b>Drop a photo above and forge the first one.</div>`;
+      return;
+    }
+    grid.innerHTML = state.library.map((item) => {
+      const albedo = (item.maps || []).find((m) => m.kind === "albedo");
+      const date = item.created ? new Date(item.created * 1000).toLocaleDateString() : "";
+      return `
+        <article class="mat-card">
+          <div class="mat-thumb">
+            ${albedo ? `<img src="${escapeHtml(albedo.url)}" alt="${escapeHtml(item.name)} albedo thumbnail" loading="lazy">` : ""}
+            <span class="badge ${verdictClass(item.verdict)}">${escapeHtml(verdictLabel(item.verdict))}</span>
+          </div>
+          <div class="mat-body">
+            <b title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</b>
+            <div class="meta">${escapeHtml(item.preset || "preset —")} · ${item.resolution ? item.resolution + "px" : "—"}${date ? " · " + date : ""}</div>
+            <div class="mat-actions">
+              <button class="btn btn-sm" type="button" data-open="${escapeHtml(item.slug)}">Open</button>
+              <a class="btn btn-sm btn-ghost" href="/api/library/${encodeURIComponent(item.slug)}/download" download>Zip</a>
+            </div>
+          </div>
+        </article>`;
+    }).join("");
+    $$("[data-open]", grid).forEach((button) => {
+      button.addEventListener("click", () => openLibrary(button.dataset.open));
+    });
+  }
+
+  // ------------------------------------------------------------------ updates
+  function setUpdateUI(update) {
+    state.update = update;
+    const available = !!(update && update.available);
+    const hasAsset = !!(update && update.asset_url);
+    const note = update && update.error ? update.error : "";
+    $("#updateDot").classList.toggle("hidden", !available);
+    const banner = $("#updateBanner");
+    if (available) {
+      banner.classList.add("show");
+      $("#updateBannerTitle").textContent = `PBRForge ${update.latest} is available`;
+      $("#updateBannerText").textContent = hasAsset
+        ? `You are on ${update.current}. The installer can update in place.`
+        : `You are on ${update.current}. ${note || "The release has no installer asset."}`;
+      $("#updateInstallBanner").classList.toggle("hidden", !hasAsset);
+    } else {
+      banner.classList.remove("show");
+    }
+    const status = $("#updateStatus");
+    if (!update) status.textContent = "No update information yet.";
+    else if (update.checking) status.textContent = "Checking GitHub for the latest release…";
+    else if (update.enabled === false) status.textContent = `Automatic checks are off. Current version ${update.current || "—"}. Use “Check now” when you want to ask GitHub.`;
+    else if (update.available) status.textContent = `Current ${update.current} · latest ${update.latest}${update.published_at ? " · published " + new Date(update.published_at).toLocaleDateString() : ""}.`;
+    else if (update.error) status.textContent = `Current ${update.current || "—"} · ${update.error}`;
+    else status.textContent = `Current ${update.current || "—"} · no newer release.`;
+    $("#releaseNotes").classList.toggle("hidden", !(update && update.notes));
+    $("#releaseNotes").textContent = update?.notes || "";
+    $("#installNowBtn").classList.toggle("hidden", !(available && hasAsset));
+    $("#installNowBtn").disabled = !(available && hasAsset);
+    $("#installNowBtn").textContent = hasAsset ? `Install ${update.latest}` : "No installer asset";
+  }
+
+  async function loadUpdate(force = false) {
+    try {
+      const update = await api("/api/update" + (force ? "?check=1" : ""));
+      setUpdateUI(update);
+      if (update && update.checking) {
+        clearTimeout(state.updatePoll);
+        state.updatePoll = setTimeout(() => loadUpdate(false), 2800);
+      }
+    } catch (error) {
+      setUpdateUI({ current: "—", available: false, error: error.message });
+    }
+  }
+
+  async function saveUpdateSettings() {
+    try {
+      const payload = await api("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          update_check: $("#settingCheck").checked,
+          update_auto_install: $("#settingAuto").checked,
+        }),
+      });
+      toast(`Update policy saved to ${payload.config}`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function installUpdate() {
+    const button = $("#installNowBtn");
+    const previous = button.textContent;
+    button.disabled = true;
+    button.innerHTML = `<span class="spinner"></span> Starting…`;
+    try {
+      const payload = await api("/api/update/install", { method: "POST" });
+      setUpdateUI({ ...(state.update || {}), error: "" });
+      $("#updateStatus").textContent = `Installer for ${payload.version} is starting. This page will close when the installer stops the server.`;
+      toast("Installer starting. Windows may ask for permission.");
+    } catch (error) {
+      $("#updateStatus").textContent = error.message;
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = previous;
+    }
+  }
+
+  // ------------------------------------------------------------------- events
+  function updateToggleStyle(input) {
+    input.closest(".toggle")?.classList.toggle("checked", input.checked);
+  }
+
+  function bind() {
+    const drop = $("#drop");
+    const input = $("#fileInput");
+    drop.addEventListener("click", () => input.click());
+    drop.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); input.click(); }
+    });
+    drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("dragging"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("dragging"));
+    drop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      drop.classList.remove("dragging");
+      const file = event.dataTransfer?.files?.[0];
+      if (file) chooseFile(file);
+    });
+    input.addEventListener("change", () => { if (input.files?.[0]) chooseFile(input.files[0]); input.value = ""; });
+    $("#replaceBtn").addEventListener("click", (event) => { event.stopPropagation(); input.click(); });
+
+    $$("#resolutionSeg button").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.resolution = Number(button.dataset.res);
+        $$("#resolutionSeg button").forEach((other) => {
+          other.classList.toggle("on", other === button);
+          other.setAttribute("aria-pressed", String(other === button));
+        });
+      });
+    });
+
+    $$(".toggle input").forEach((toggle) => {
+      updateToggleStyle(toggle);
+      toggle.addEventListener("change", () => updateToggleStyle(toggle));
+    });
+
+    $("#convertBtn").addEventListener("click", submitJob);
+    $("#retryBtn").addEventListener("click", () => {
+      $("#progressPanel").classList.remove("show");
+      $("#studio").scrollIntoView({ behavior: "smooth" });
+    });
+    $("#errorDismiss").addEventListener("click", () => {
+      $("#progressError").classList.add("hidden");
+      $("#progressErrorActions").classList.add("hidden");
+    });
+    $("#newMaterialBtn").addEventListener("click", () => {
+      state.file = null;
+      $("#preview").classList.remove("show");
+      $("#drop").classList.remove("hidden");
+      $("#convertBtn").disabled = true;
+      $("#progressPanel").classList.remove("show");
+      $("#resultPanel").classList.remove("show");
+      state.viewer?.pause();
+      $("#studio").scrollIntoView({ behavior: "smooth" });
+    });
+
+    $("#copyFolderBtn").addEventListener("click", copyFolder);
+    $("#copyFolderBtn2").addEventListener("click", copyFolder);
+    async function copyFolder() {
+      if (!state.result?.folder) return;
+      try {
+        await navigator.clipboard.writeText(state.result.folder);
+        toast("Folder path copied.");
+      } catch (_) {
+        toast(state.result.folder);
+      }
+    }
+
+    $("#tiledToggle").addEventListener("change", (event) => {
+      state.tiled = event.target.checked;
+      applyTiled();
+      if (state.activeMap === "3d") state.viewer?.draw();
+      if (state.result) selectView(state.activeMap);
+    });
+    $("#animateLightBtn").addEventListener("click", (event) => {
+      state.animateLight = !state.animateLight;
+      event.currentTarget.setAttribute("aria-pressed", String(state.animateLight));
+      state.viewer.userLight = false;
+      if (!state.animateLight) state.viewer?.draw();
+    });
+
+    $("#viewTabs").addEventListener("click", (event) => {
+      const tab = event.target.closest(".tab");
+      if (tab) selectView(tab.dataset.view);
+    });
+
+    $("#refreshLibrary").addEventListener("click", loadLibrary);
+    $("#updatesBtn").addEventListener("click", () => {
+      $("#settingCheck").checked = !!state.update?.enabled;
+      $("#settingAuto").checked = !!state.update?.auto_install;
+      setUpdateUI(state.update);
+      $("#updateDialog").showModal();
+    });
+    $("#checkNowBtn").addEventListener("click", () => loadUpdate(true));
+    $("#installNowBtn").addEventListener("click", installUpdate);
+    $("#updateInstallBanner").addEventListener("click", installUpdate);
+    $("#updateLater").addEventListener("click", () => $("#updateBanner").classList.remove("show"));
+    $("#settingCheck").addEventListener("change", saveUpdateSettings);
+    $("#settingAuto").addEventListener("change", saveUpdateSettings);
+    $$("[data-close-dialog]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const dialog = document.getElementById(button.dataset.closeDialog);
+        if (dialog?.open) dialog.close();
+      });
+    });
+    $("#lightboxTile").addEventListener("change", (event) => {
+      const map = state.result?.maps.find((item) => item.kind === state.activeMap);
+      if (map) prepareLightbox(map.url, event.target.checked);
+    });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        $$("dialog[open]").forEach((dialog) => dialog.close());
+      }
+    });
+    window.addEventListener("beforeunload", () => {
+      if (state.viewer) state.viewer.destroy();
+    });
+  }
+
+  async function boot() {
+    bind();
+    await Promise.allSettled([loadHealth(), loadPresets(), loadLibrary()]);
+    loadUpdate(false);
+  }
+
+  document.addEventListener("DOMContentLoaded", boot);
 })();
 </script>
 </body>

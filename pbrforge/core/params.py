@@ -190,6 +190,10 @@ class DelightParams:
 class HeightParams:
     enabled: bool = True
     source: str = "delight"         # delight / original / external
+    #: Bright pixels are high by default. Brick is the common exception: the
+    #: mortar is often lighter than the brick, but physically recessed, so the
+    #: brick category flips this. Exposed in the UI as "height polarity".
+    invert: bool = False
     smooth: float = 0.0
     detail_boost: float = 0.0
     amplitude_mm: float = 10.0
@@ -569,6 +573,7 @@ class Params:
         if key in ("brick", "brick_wall", "masonry"):
             self.category = "brick"
             self.height.source = "delight"
+            self.height.invert = True
             self.height.detail_boost = 0.5
             self.rough.base = 0.65
             self.ao.strength = 0.7

@@ -24,6 +24,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 from . import APP_NAME, __version__
 from .config import Config
@@ -417,8 +418,265 @@ def cmd_cache(args: argparse.Namespace) -> int:
     return 0
 
 
+def _open_path(path: Path) -> None:
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))       # type: ignore[attr-defined]
+        else:
+            import subprocess
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            subprocess.Popen([opener, str(path)], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        print(f"  could not open {path}: {exc}", file=sys.stderr)
+
+
+def _wait_job(job: Any, *, show_stages: bool = True) -> None:
+    last = None
+    while not job._done.is_set():
+        if show_stages and job.stage != last:
+            print(f"  {job.progress * 100:5.1f}%  {job.stage:<14} "
+                  f"{job.message[:96]}")
+            last = job.stage
+        job._done.wait(0.25)
+    if show_stages and job.stage != last:
+        print(f"  {job.progress * 100:5.1f}%  {job.stage:<14} "
+              f"{job.message[:96]}")
+
+
+def _print_job_result(job: Any) -> None:
+    data = job.to_dict()
+    if job.state == "failed":
+        print(f"\n  failed   {job.name}")
+        for line in (job.error or "the job failed").splitlines():
+            print(f"  {line}" if line.startswith(" ") else f"  {line}")
+        print(f"\n  staging  {job.folder or '(removed)'}\n")
+        return
+    qc = data.get("qc") or {}
+    verdict = qc.get("verdict") if isinstance(qc, dict) else (qc or "—")
+    print(f"\n  material {job.name}")
+    print(f"  folder   {job.folder}")
+    print(f"  qc       {verdict or '—'}")
+    print(f"  time     {job.seconds:.1f} s")
+    if job.folder:
+        zip_path = next(Path(job.folder).glob("PBRForge-*.zip"), None)
+        if zip_path:
+            print(f"  zip      {zip_path}")
+    print()
+
+
+def cmd_make(args: argparse.Namespace) -> int:
+    from .jobs import JobManager
+    from .core.errors import LimitError
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    source = Path(args.input).expanduser()
+    if not source.is_file():
+        return _fail(f"{source} does not exist")
+    manager = JobManager(cfg, workers=1)
+    try:
+        job = manager.submit_file(
+            source,
+            name=args.name or "",
+            preset=args.preset,
+            category=args.category,
+            resolution=args.resolution,
+            metal=args.metal,
+            seamless=not args.no_seamless,
+            delight=not args.no_delight,
+            auto_levels=args.auto_levels,
+            white_balance=args.white_balance,
+            square=args.square,
+            height_polarity=args.height,
+        )
+        if not args.json:
+            print(f"\n  source   {source}")
+            print(f"  name     {job.name}")
+            print(f"  preset   {job.preset}  ·  {job.resolution}px  ·  "
+                  f"worker {job.id}\n")
+        _wait_job(job, show_stages=not args.json)
+        if args.json:
+            print(json.dumps(job.to_dict(), indent=2))
+        else:
+            _print_job_result(job)
+        if args.open and job.folder:
+            _open_path(Path(job.folder))
+        return 0 if job.state == "done" else 1
+    except LimitError as exc:
+        return _fail(str(exc))
+    finally:
+        manager.shutdown()
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    from .jobs import JobManager
+    from .core.errors import LimitError
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    sources: list[Path] = []
+    for raw in args.inputs:
+        path = Path(raw).expanduser()
+        if path.is_dir():
+            sources.extend(sorted(path.glob("*.png")))
+        elif path.is_file():
+            sources.append(path)
+        else:
+            print(f"  skip     {path} (not found)", file=sys.stderr)
+    if not sources:
+        return _fail("no PNG files matched those paths")
+    manager = JobManager(cfg, workers=1)
+    results = []
+    try:
+        for index, source in enumerate(sources, start=1):
+            if source.suffix.lower() != ".png":
+                print(f"  [{index}/{len(sources)}] skip {source.name}: not a PNG")
+                continue
+            job = manager.submit_file(
+                source, name=args.name_prefix + source.stem if args.name_prefix else "",
+                preset=args.preset, category=args.category,
+                resolution=args.resolution, metal=args.metal,
+                seamless=not args.no_seamless, delight=not args.no_delight,
+                auto_levels=args.auto_levels, white_balance=args.white_balance,
+                square=args.square, height_polarity=args.height,
+            )
+            print(f"  [{index}/{len(sources)}] {source.name} → {job.id}")
+            _wait_job(job, show_stages=bool(args.verbose))
+            results.append(job.to_dict())
+            if job.state == "done":
+                print(f"       done {job.seconds:.1f}s  {job.folder}")
+            else:
+                print(f"       FAILED  {(job.error or '').splitlines()[0]}")
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            done = sum(1 for item in results if item["state"] == "done")
+            print(f"\n  batch    {done}/{len(sources)} done  ·  "
+                  f"{len(sources) - done} failed\n")
+        return 0 if all(item["state"] == "done" for item in results) else 1
+    except LimitError as exc:
+        return _fail(str(exc))
+    finally:
+        manager.shutdown()
+
+
+def cmd_library(args: argparse.Namespace) -> int:
+    from .jobs import JobManager
+
+    cfg = _cfg(args)
+    manager = JobManager(cfg, workers=1)
+    try:
+        materials = manager.list_library()
+        if args.json:
+            print(json.dumps(materials, indent=2))
+            return 0
+        if not materials:
+            print(f"\n  library  {cfg.library}")
+            print("  no materials yet. Forge one with:  pbrforge make photo.png\n")
+            return 0
+        print(f"\n  library  {cfg.library}\n")
+        print(f"  {'name':<30} {'qc':<6} {'preset':<18} {'size':>6}  folder")
+        for item in materials:
+            name = str(item.get("name") or item.get("slug") or "?")[:29]
+            qc = str(item.get("verdict") or "—")[:5]
+            preset = str(item.get("preset") or "—")[:17]
+            size = item.get("resolution")
+            size_text = f"{size}px" if size else "—"
+            print(f"  {name:<30} {qc:<6} {preset:<18} {size_text:>6}  {item.get('slug')}")
+        print()
+        if args.open is not None:
+            target = cfg.library / args.open if args.open else cfg.library
+            if target.is_dir():
+                _open_path(target)
+            else:
+                return _fail(f"{target} is not a library folder")
+        return 0
+    finally:
+        manager.shutdown()
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    from . import update as update_mod
+    from .core.errors import LimitError
+
+    cfg = _cfg(args)
+    info = update_mod.check(args.repo or cfg.update_repo)
+    if args.json:
+        print(json.dumps(info.to_dict(), indent=2))
+    else:
+        print(f"\n  current  {info.current}")
+        print(f"  latest   {info.latest or '—'}")
+        if info.error:
+            print(f"  status   {info.error}")
+        elif info.available:
+            print(f"  status   update available  ·  {info.asset_name or 'no installer asset'}")
+            if info.html_url:
+                print(f"  release  {info.html_url}")
+            if info.notes:
+                print()
+                for line in info.notes.splitlines()[:12]:
+                    print(f"  {line}")
+        else:
+            print("  status   up to date")
+        print()
+    if not args.install:
+        return 0
+    if not info.available:
+        return _fail(info.error or "there is no newer release to install")
+    try:
+        target = update_mod.install(info)
+    except LimitError as exc:
+        return _fail(str(exc))
+    print(f"\n  installer started  {target}")
+    print("  The server will stop when the installer replaces the files.\n")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
+
+    if args.set:
+        from dataclasses import fields
+        from .config import Config as _Config
+        known = {f.name for f in fields(_Config)}
+        aliases = {"check": "update_check", "auto_install": "update_auto_install",
+                   "repo": "update_repo", "update.check": "update_check",
+                   "update.auto_install": "update_auto_install",
+                   "update.repo": "update_repo"}
+        changed = []
+        for assignment in args.set:
+            if "=" not in assignment:
+                return _fail(f"expected KEY=VALUE, got {assignment!r}")
+            key, raw = assignment.split("=", 1)
+            attr = aliases.get(key.strip().lower(), key.strip().lower())
+            if attr not in known or attr in ("config_dir", "config_file", "source",
+                                             "load_error"):
+                return _fail(f"unknown setting {key!r}; run 'pbrforge config --json' "
+                             f"to see names")
+            current = getattr(cfg, attr)
+            if isinstance(current, bool):
+                value = raw.strip().lower() in ("1", "true", "yes", "on")
+            elif isinstance(current, int) and not isinstance(current, bool):
+                try:
+                    value = int(raw)
+                except ValueError:
+                    return _fail(f"{key} expects an integer, got {raw!r}")
+            elif isinstance(current, Path):
+                value = Path(raw).expanduser()
+            else:
+                value = raw
+            setattr(cfg, attr, value)
+            changed.append((attr, current, value))
+        try:
+            target = cfg.save()
+        except OSError as exc:
+            return _fail(f"could not write {cfg.config_file}: {exc}")
+        print(f"\n  wrote  {target}")
+        for attr, old, new in changed:
+            print(f"  {attr:<22} {old}  →  {new}")
+        print()
+        return 0
 
     if args.write:
         target = cfg.write_default(force=args.force)
@@ -463,8 +721,9 @@ def cmd_version(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------- parser
-COMMANDS = ("serve", "stop", "doctor", "selftest", "url", "code", "discover", "tls",
-            "cache", "config", "version", "help")
+COMMANDS = ("serve", "make", "batch", "library", "stop", "doctor", "selftest",
+            "url", "code", "discover", "tls", "cache", "config", "update",
+            "version", "help")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -507,6 +766,55 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-discovery", dest="discovery", action="store_false", default=None,
                    help="do not answer LAN discovery broadcasts")
     p.add_argument("-v", "--verbose", action="store_true", help="log every request")
+    add_common(p)
+
+    def add_job_options(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--name", metavar="TEXT", help="material name (default: file stem)")
+        p.add_argument("--preset", default="generic-pbr", metavar="NAME",
+                       help="export preset (default generic-pbr)")
+        p.add_argument("--category", default="unknown",
+                       choices=["unknown", "brick", "marble"],
+                       help="material type; brick flips the height polarity")
+        p.add_argument("--resolution", type=int, default=1024, metavar="PX",
+                       help="working long edge, 256..4096 (default 1024)")
+        p.add_argument("--metal", default="auto", choices=["auto", "none", "full"],
+                       help="metalness decision (default auto = honest dielectric)")
+        p.add_argument("--height", default="auto",
+                       choices=["auto", "normal", "invert"],
+                       help="bright pixels are high, or recessed")
+        p.add_argument("--auto-levels", action="store_true",
+                       help="stretch the histogram (off by default; can clip)")
+        p.add_argument("--white-balance", action="store_true",
+                       help="neutralise a colour cast")
+        p.add_argument("--square", action="store_true", help="centre-crop to a square")
+        p.add_argument("--no-seamless", action="store_true", help="skip the seam heal")
+        p.add_argument("--no-delight", action="store_true",
+                       help="skip illumination flattening")
+
+    p = sub.add_parser("make", help="convert one PNG photo into a PBR material")
+    p.add_argument("input", metavar="PHOTO.png")
+    add_job_options(p)
+    p.add_argument("--open", action="store_true", help="open the result folder")
+    add_common(p)
+
+    p = sub.add_parser("batch", help="convert every PNG in a folder")
+    p.add_argument("inputs", nargs="+", metavar="FILE_OR_DIR")
+    add_job_options(p)
+    p.add_argument("--name-prefix", default="", metavar="TEXT",
+                   help="prefix every material name")
+    p.add_argument("-v", "--verbose", action="store_true", help="show every stage")
+    add_common(p)
+
+    p = sub.add_parser("library", help="list finished materials")
+    p.add_argument("--open", nargs="?", const="", metavar="SLUG",
+                   help="open the library, or one material folder")
+    add_common(p)
+
+    p = sub.add_parser("update", help="check GitHub for a newer release")
+    p.add_argument("--check", action="store_true", help="check (the default action)")
+    p.add_argument("--install", action="store_true",
+                   help="download and run the installer (Windows)")
+    p.add_argument("--repo", metavar="OWNER/NAME", help="override the GitHub repo")
     add_common(p)
 
     p = sub.add_parser("doctor", help="check whether this machine can run PBRForge")
@@ -557,10 +865,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--size", action="store_true", help="print the cache size and exit")
     add_common(p)
 
-    p = sub.add_parser("config", help="show or create the configuration file")
+    p = sub.add_parser("config", help="show or change the configuration file")
     p.add_argument("--write", action="store_true", help="write the default config file")
     p.add_argument("--force", action="store_true", help="overwrite an existing file")
     p.add_argument("--paths", action="store_true", help="print the resolved paths only")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE",
+                   help="persist one setting (repeatable); rewrites config.toml")
     add_common(p)
 
     p = sub.add_parser("version", help="print the version")
@@ -596,10 +906,11 @@ def main(argv: list[str] | None = None) -> int:
 
     command = args.command or "serve"
     handlers = {
-        "serve": cmd_serve, "stop": cmd_stop, "doctor": cmd_doctor,
+        "serve": cmd_serve, "make": cmd_make, "batch": cmd_batch,
+        "library": cmd_library, "stop": cmd_stop, "doctor": cmd_doctor,
         "selftest": cmd_selftest, "url": cmd_url, "code": cmd_code,
         "discover": cmd_discover, "tls": cmd_tls, "cache": cmd_cache,
-        "config": cmd_config, "version": cmd_version,
+        "config": cmd_config, "update": cmd_update, "version": cmd_version,
     }
     handler = handlers.get(command)
     if handler is None:

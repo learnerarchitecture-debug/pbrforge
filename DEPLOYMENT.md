@@ -3,6 +3,9 @@
 How to get PBRForge running on one machine and usable from the others, on a local
 network, without a cloud account and without a degree in PKI.
 
+> **0.2.0 status:** source deployment is supported; the installer and every deploy script
+> are not claimed as tested in this release. See section 1.1 and [INSTALLATION.md](INSTALLATION.md).
+
 This document is the operational half of the project. `README.md` says what
 PBRForge is, `INSTALLATION.md` covers a single developer machine, and this file
 covers the case the whole server exists for: **your workstation does the work,
@@ -33,23 +36,17 @@ you maintaining N Python installs and N caches, and the caches never agree.
 Model C is better than A *if* the NAS is genuinely always on and you do not mind
 the container caveats in §10.4.
 
-### 1.1 What "serving" actually means today
+### 1.1 What "serving" means in 0.2.0
 
-Being honest about the current state, because it changes what you should expect
-from a deployment: the server today serves the **UI, the API surface, pairing,
-TLS, discovery and health**, and the pipeline stages (seamless, delight, derive,
-repack) are not implemented yet. So right now the practical value of deploying
-this is:
+The server, web app, job manager and the full 15-stage pipeline are implemented and exercised from
+source. A LAN client can upload a photo, watch the job, inspect and download the resulting material.
+Pairing, HTTPS, discovery and `doctor`/`selftest` are present.
 
-- the prototype UI, reachable from every PC on the LAN, with a real WebGL/WebGPU
-  preview and a real seam metric computed from real pixels;
-- a proven, working transport for when the stages land — pairing, HTTPS, the
-  secure context, the library paths, the cache, the discovery beacon;
-- `pbrforge doctor` and `selftest` on every machine, which is how you find out
-  that machine #3 has no working GPU before you need it.
-
-Deploying it now is not premature. It is how the multi-PC story gets verified
-while the surface area is still small enough to debug.
+The **compiled Windows installer and some scripts in `deploy/` were not exercised in 0.2.0**. Treat
+the packaged-install sections as design targets until the install/upgrade/uninstall cycle has
+actually been run. Source deployment (this document's paths, config, library and cache split) is the
+supported route in this release. The implementation status is tracked in `README.md` and
+`CHANGELOG.md`; when this file and those disagree, those win.
 
 ---
 

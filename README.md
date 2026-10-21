@@ -1,163 +1,301 @@
 # 🧱 PBRForge
 
-### Turn a photographed texture into a tileable, render‑ready PBR material in one pass.
+### Photo → seamless PBR material, locally, in one pass.
 
-Drop in a photo of a brick wall, a floor tile, a wood plank, a fabric swatch. Get back a
-seamless material set — **albedo, normal, roughness, metallic, AO, height** — packaged with the
-right colour spaces, bit depths and filenames for **Enscape, V‑Ray, Corona and Blender**.
+Drop in a photograph of brick, stone, wood, tile or fabric. PBRForge decodes it, removes the
+lighting, finds the repeat, heals the seam, derives height, normal, AO, roughness and metalness,
+then packs the set for **Enscape, V‑Ray, Corona, Blender, Unreal, Unity, glTF and Lumion**.
 
-Built for one person's own library. 🙅‍♂️ **No accounts, no cloud, no subscription.** Runs locally.
+No account. No cloud. No telemetry. A local server and a local library, built for one person.
 
----
-
-## 📚 Documentation Index
-
-| 📄 Document | 🎯 Read it when |
-|---|---|
-| **[INSTALLATION.md](INSTALLATION.md)** | Setting up one machine. Start here if you just cloned this. |
-| **[DEPLOYMENT.md](DEPLOYMENT.md)** | Running it on a LAN. One server, many clients, HTTPS, firewall, upgrades. |
-| **[docs/UI_DESIGN.md](docs/UI_DESIGN.md)** | Building or changing the interface. Design system, tokens, layout, screens, keyboard map. |
-| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | Understanding how the pieces fit, or deciding what to add. |
-| **[docs/PIPELINE.md](docs/PIPELINE.md)** | Working on the algorithms. Every stage, every parameter, every default. |
-| **[docs/PRESETS.md](docs/PRESETS.md)** | Wiring output into a renderer. Enscape/V‑Ray/Corona/Blender cookbook. |
-| **[docs/FEATURES.md](docs/FEATURES.md)** | Planning what to build next. ~40 suggested features with effort estimates. |
-| **[docs/AI_FEATURES.md](docs/AI_FEATURES.md)** | Adding or tuning AI. Models, prompts, constraints, failure modes. |
-| **[docs/AUTOMATION.md](docs/AUTOMATION.md)** | Batching, watch folders, scheduled runs, CLI recipes. |
-| **[docs/PROMPTS.md](docs/PROMPTS.md)** | Handing work to an AI coding agent, or editing runtime AI prompts. |
-| **[docs/QC_METRICS.md](docs/QC_METRICS.md)** | Defining "good enough". Metric formulas, thresholds, reporting. |
-| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Committing code. Layout, conventions, tests, how to add things. |
-| **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** | Something looks wrong in the render. Symptom → cause → fix. |
-| **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | You forgot what ORM stands for again. |
-
-💡 **Live UI prototype:** open [`ui/prototype.html`](ui/prototype.html) in Chrome or Edge.
-Real working preview — actual derived maps, actual PBR shading, actual tiling and seam‑heatmap maths, no build step.
+<p>
+  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-E0A458">
+  <img alt="python" src="https://img.shields.io/badge/python-3.12%2B-3776AB">
+  <img alt="runtime" src="https://img.shields.io/badge/runtime-stdlib%20only-2E7D32">
+  <img alt="licence" src="https://img.shields.io/badge/licence-personal%20use-8E5CC7">
+</p>
 
 ---
 
-## 🚀 Quickstart
+## ✨ What is in 0.2.0
 
-Three ways in. Pick the first unless you are changing code.
+| Area | State | What it actually does |
+|---|---|---|
+| 🖼️ **Web app** | ✅ built | Drop a photo, choose preset/polarity, watch every stage, inspect the maps in 2D/WebGL, download the zip, reopen anything from the library |
+| ⚙️ **Pipeline** | ✅ built | 15 stages from `ingest` to `qc`; one authoritative height field; seam score recomputed from the packed maps |
+| 🎛️ **CLI** | ✅ built | `serve`, `make`, `batch`, `library`, `config --set`, `update`, `doctor`, `selftest`, `stop` |
+| 📦 **Jobs + library** | ✅ built | staging → promote → previews → zip → `job.json`; survives a server restart |
+| 🔄 **Updates** | ✅ built, no release yet | GitHub Release check, size/hash verification, opt‑in silent Inno install; honest “no release exists yet” message |
+| 🧪 **Tests** | ✅ 18/18 | `selftest`, seam fixture separation, pack contract, synthetic 256/512/1024 end‑to‑end |
+| 🪟 **Windows installer** | ⏸️ not built | Source template exists; no installer is claimed as tested in this release |
+| 🤖 **AI** | ❌ absent | Deliberately classical. No model downloads, no account, no training |
 
-### 1️⃣ Install it (no Python required)
+> **Honest boundary:** the browser can convert any image it can decode (JPEG, PNG, WebP, AVIF,
+> sometimes HEIC) to PNG before upload. The Python server and CLI are PNG‑only and refuse anything
+> else with a named fix. They never pretend to decode a format they cannot.
 
-Run `PBRForge-Setup-<version>.exe`. Installs per‑user without Administrator, starts the server,
-prints the address for other PCs.
+---
 
-```powershell
-# Or build the installer yourself from source:
-powershell -ExecutionPolicy Bypass -File deploy\build-installer.ps1
+## 🚀 Quickstart (source, Windows/macOS/Linux)
 
-# Stop it from any window on the host:
-pbrforge stop
-```
-
-🛑 `pbrforge stop` is not a Task Manager wrapper — see
-[DEPLOYMENT.md § Stopping the server](DEPLOYMENT.md#stopping-the-server) for why the process you see
-is **not** the one holding the port.
-
-Result: single self‑contained executable (~12 MB), zero runtime deps —
-see [docs/ARCHITECTURE.md §2.1](docs/ARCHITECTURE.md) for why that's an architectural rule.
-
-### 2️⃣ Use it from another PC (LAN)
-
-One machine runs the server; every other PC just opens a URL.
+Requirements: **Python 3.12+**, nothing else. The installable path is standard library only.
 
 ```powershell
-# On the host machine:
-powershell -ExecutionPolicy Bypass -File deploy\install-server.ps1
-python -m pbrforge tls init                  # HTTPS so LAN clients keep WebGPU
-python -m pbrforge serve                     # prints URL + pairing code
-```
-
-Open `https://192.168.1.100:7443` on any LAN PC, enter the code once. Full walkthrough including
-the firewall step and why HTTPS is load‑bearing: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
-
-### 3️⃣ Work on the code
-
-```powershell
-# Get the code OUTSIDE OneDrive (see INSTALLATION.md, step 0)
-cd C:\dev
 git clone https://github.com/learnerarchitecture-debug/pbrforge.git
 cd pbrforge
-
-# Verify the server needs nothing installed:
-python -m pbrforge doctor                    # ends in "ready to run"
-python -m pbrforge selftest                  # 18/18
-
-# Optional (only dep with real UX cost):
-python -m pip install cryptography           # local HTTPS for LAN clients
-
-# Start it:
+python -m pbrforge doctor        # ends in "ready to run"
+python -m pbrforge selftest      # 18/18
 python -m pbrforge serve
 ```
 
-📦 The imaging stack (libvips, numpy, OpenCV) is **not** installed deliberately. Imaging core
-(`core/image.py`, `core/colour.py`) is pure stdlib; above a measured budget a large resample
-raises `LimitError` naming the fix instead of running for minutes. When stages land and
-vectorised paths are measured, use a venv:
+`serve` prints a local URL and a one‑time pairing code. Open the URL, enter the code if asked, then:
 
-```powershell
-python -m venv .venv
-\.venv\Scripts\Activate.ps1
-pip install -r REQUIREMENTS.txt
+1. **Drop a photo** onto the studio card.
+2. Pick a **category** (`Brick` flips height so mortar is recessed; `Unknown` keeps bright‑is‑high).
+3. Pick a **resolution** (512, 1024, 2048, 4096; 1024 is the default and a good first run).
+4. Press **Forge material**.
+5. Watch progress, inspect the lit preview and the seven map views, then **Download .zip**.
+
+Everything lands under the configured library folder, typically:
+
+```text
+%USERPROFILE%\Documents\PBRForge\library\<material>\
 ```
 
 ---
 
-## ✨ Design Principles
+## 🧭 Three ways to work
 
-*Load‑bearing. When a feature request conflicts with one, the principle wins.*
+### 1. Web app — the normal way
 
-1. **One authoritative height field.** Fix seams once on geometry, derive normal, AO, cavity, roughness *from it*. Never process maps independently — that's the #1 source of "my normal map doesn't line up with my albedo" bugs.
-2. **Deterministic by default.** Same input + same params + same version = byte‑identical output. Pipeline hash stored every run. AI pinned to seed/model version, off by default for exports.
-3. **Show the failure.** Seam score 71%? Say so, jump viewport to worst spot. Silent mediocrity destroys trust faster than an outright error.
-4. **Every automatic decision is reversible.** AI/heuristic output = new version with visible before/after + one‑click "do it the dumb way instead".
-5. **The export is the product.** Beautiful preview that produces mis‑named, gamma‑mangled PNGs has failed. Renderer correctness > algorithmic elegance.
-6. **Non‑destructive.** Nothing overwritten. Stages re‑runnable from any point.
+```powershell
+python -m pbrforge serve
+```
 
----
+The UI is a hand‑written, dependency‑free HTML/JS app served from `ui/prototype.html`. It speaks
+only to the local server; there is no CDN, external font, analytics call or remote asset.
 
-## ⛔ Anti‑Goals (Deliberate Non‑Features)
-
-Kept here so they don't creep back in:
-
-- ❌ No accounts, teams, billing, licences, telemetry, phoning home
-- ❌ No cloud dependency — works with network unplugged
-- ❌ No procedural node‑graph authoring — that's Substance Designer
-- ❌ No `.sbsar` export — Adobe SAT licence restricted; `.mtlx`/`.usda`/`.blend` cover it
-- ❌ No "one click is always right" — tool reports confidence, not certainty
-- ❌ No photogrammetry, modelling, UV unwrapping, scene assembly
-- ❌ No training on your images. Ever.
-
----
-
-## 📊 Status
-
-| 🎯 Area | ✅ State |
+| Screen | What you can do |
 |---|---|
-| Scoping, architecture, presets, QC design | documented |
-| UI design + interactive prototype | `ui/prototype.html` — real material, real WebGL preview, real seam metric |
-| Server (HTTP, pairing, HTTPS, discovery) | built — stdlib only, no deps |
-| CLI, config, `doctor`, `selftest` | built — 18/18 end‑to‑end tests |
-| Imaging core (typed image, tiling‑safe resample, colour‑space gate) | built — pure stdlib; enforces two rules in code, 4 selftests |
-| TLS certificate generation | built — `cryptography` or `openssl` CLI; both verified |
-| Packaging (portable `.exe`, installer, Docker, systemd) | built & **verified** — both artefacts compiled; install/use/uninstall cycle tested |
-| LAN HTTPS (client POV) | verified — 6 checks including "untrusted CA refused" |
-| Pipeline stages (ingest → seamless → derive → pack) | to build — see [docs/PIPELINE.md](docs/PIPELINE.md) |
-| Library index + job orchestration | to build |
-| AI layers (super‑res, seam refinement, matting) | optional, later |
-| Automation (watch folder, scheduled audit) | after core |
+| **Studio** | Drop/upload a photo, preview it, name it, choose preset, category, resolution, height polarity, metalness, seamless and de‑light toggles |
+| **Progress** | Stage, percentage, elapsed time, per‑stage notes, cancel/reload guidance |
+| **Result** | Lit WebGL preview, 2×2 tiled map views, QC verdict, map downloads, zip download, folder path |
+| **Library** | Every finished material, QC badge, dimensions, creation time, reopen detail, download again |
+| **Updates** | Current version, latest GitHub release, asset name, explicit **Install** action when available |
 
-The deployment layer and imaging core are finished first — deliberately. The two rules preventing most pipeline bugs (data maps never receive gamma; derived maps aligned by construction) are cheapest to enforce before code exists to retrofit them, and are now enforced at the type level. A transport exercised end‑to‑end on the real network stack isn't something to discover at the end.
+### 2. CLI — repeatable and batch‑friendly
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the ordered build list.
+```powershell
+# One photo, 1024 px, brick height polarity
+python -m pbrforge make .\wall.png --name "Red brick" --category brick --resolution 1024
+
+# Everything in a folder, serially, one worker
+python -m pbrforge batch .\photos --resolution 1024
+
+# List the library / open one folder
+python -m pbrforge library
+python -m pbrforge library --open red_brick
+
+# Change a setting and write canonical config.toml
+python -m pbrforge config --set update_check=false --set resolution=2048
+
+# Check GitHub (does not download unless you ask)
+python -m pbrforge update --check
+```
+
+### 3. Library — the output is the product
+
+Each material is a self‑contained folder plus a zip:
+
+```text
+<library>/red_brick/
+├─ maps/                   six or seven master PNGs (albedo, normal, AO, roughness,
+│                          height, metallic, optional opacity/macro)
+├─ previews/               browser-sized previews used by the library cards
+├─ export/
+│  ├─ generic-pbr/         renderer‑ready names, colour spaces and channel packing
+│  └─ <other preset>/      one folder per exported preset
+├─ material.json           parameters, hashes, provenance, dimensions, QC
+├─ qc_report.json          measured metrics + verdict + thresholds
+├─ job.json                job identity, timings, notes, map URLs, zip path
+├─ README.txt              human‑readable map guide
+└─ PBRForge-<name>-<px>.zip
+```
+
+`material.json` is the authority. `previews/` and the zip are conveniences and can be rebuilt.
+A failed job is never moved into the library; its staging folder is left behind for inspection.
 
 ---
 
-## 📄 Licence
+## 🧪 The pipeline
 
-**Personal use only.** See [LICENSE.txt](LICENSE.txt).
+```text
+ingest → preprocess → lattice → seamless → delight
+       → derive_height → derive_normal → derive_ao
+       → derive_rough → derive_metal → variation
+       → alphamatte → upscale → pack → qc
+```
+
+| Stage | Decision it owns | Honest limit |
+|---|---|---|
+| **ingest** | Decode PNG, separate alpha into an `opacity` input, record source class | PNG only in Python; browser handles the rest |
+| **preprocess** | White balance, guarded levels, denoise/de‑JPEG, square/content crop, resize | Auto‑levels is **off by default** because aggressive stretching can crush brick shadows |
+| **lattice** | Find repeat periods and confidence | Below 0.75 confidence it snaps the crop size only; it does not pretend to know the exact tile |
+| **seamless** | Lattice snap, offset search, band heal, mirror fallback | Reports the measured seam score; never says “seamless” without the number |
+| **delight** | Remove low‑frequency illumination, restore mean luminance | A single photo cannot recover true albedo; the residual is reported |
+| **derive_height** | One height field from the de‑lit image | `brick` defaults to inverted (light mortar is recessed); `auto/normal/invert` is explicit |
+| **derive_normal** | Sobel normal in OpenGL tangent space | Not a scanned normal map; derived from the same height field by construction |
+| **derive_ao** | Multi‑scale AO on a high‑pass height field | Dark albedo is not treated as a cavity |
+| **derive_rough** | Hybrid relief/cavity/specular evidence, roughness or glossiness mode | One photo is weak evidence; distribution is reported |
+| **derive_metal** | explicit zero / one / painted mask | `auto` returns dielectric with confidence 0 rather than guessing |
+| **variation** | Non‑tiling macro field + subtle albedo/roughness variation | Deliberately not tileable; exported as a separate map |
+| **alphamatte** | Pass through real alpha; never invent a matte | Feathering and edge decontamination are future work |
+| **upscale** | Declared disabled path | No silent bilinear substitute masquerading as super‑resolution |
+| **pack** | Nine presets, filenames, colour spaces, channel packing | EXR and JPEG are refused; data maps never receive sRGB |
+| **qc** | Recompute seam score, clipping, normal unit/blue/XY, roughness distribution | A warning is shown; a fail is not hidden behind a green badge |
+
+### Seam metric
+
+For a wrap edge and interior samples:
+
+```text
+e = max(1, wrap / p95(interior))
+score = round(100 / e)
+```
+
+`e = 1.00` → `100/100`. The self‑test fixtures pin the scale: ramp `192×192` goes from `e=191` to
+`e=1`; flat `32×32` and the synthetic brick both score `100`. A broken tile must separate from a
+healed tile by a wide margin, not by a rounding error.
 
 ---
 
-*Generated with ❤️ by OpenCode — a coding agent harness.*
+## 🎨 Height, AO and metal: the three places tools usually lie
+
+| Problem | PBRForge behaviour |
+|---|---|
+| **Brick mortar looks raised** | Choosing category `Brick` inverts the height field by default. Light mortar becomes low; bricks become high |
+| **Dark bricks look like holes in AO** | AO is computed from a high‑pass height field, so albedo darkness alone cannot create a cavity |
+| **Every photo is called metal** | `auto` metalness returns `0.0` with confidence `0` and a warning. Choose `none`, `full` or paint a mask |
+| **Auto‑levels ruins a photo** | Off by default in the UI, API and CLI. Enable it deliberately; QC reports clipped whites |
+| **“Seamless” but visibly tiled** | The seam score is recomputed from the packed export and written to `qc_report.json`; the UI shows the verdict |
+
+---
+
+## 🔄 Updates, without a background phoning‑home service
+
+The design is deliberately small:
+
+1. `pbrforge update --check` (or the UI button) makes **one** GET to the GitHub Releases API.
+2. The version is compared semantically with `pbrforge.__version__`.
+3. If a newer release exists, PBRForge selects the expected asset
+   `PBRForge-Setup-<version>.exe` — never “the first exe in the list”.
+4. On explicit install, it verifies the advertised SHA‑256 when supplied and always verifies size.
+5. It launches the Inno Setup installer silently, then exits so Windows can replace files.
+
+Settings live in `config.toml`:
+
+```toml
+[updates]
+check           = true     # allow an explicit/manual check
+auto_install    = false    # default: never install without a click
+repo            = "learnerarchitecture-debug/pbrforge"
+```
+
+There is no telemetry, no background upload, no mirror fallback, and no “update failed, deleted your
+working copy” path. With no GitHub Release published, the tool says exactly that:
+
+```text
+status   no GitHub release exists yet
+```
+
+---
+
+## 🧰 CLI reference
+
+```text
+pbrforge serve                    start the local web app (default with no args)
+pbrforge make PHOTO.png           convert one PNG
+pbrforge batch FILE_OR_DIR...     convert a folder serially
+pbrforge library [--open SLUG]    list/open finished materials
+pbrforge config --set KEY=VALUE   persist settings (repeatable)
+pbrforge update [--check|--install]
+pbrforge doctor                   environment check
+pbrforge selftest                 18/18 end‑to‑end checks
+pbrforge stop                     the single supported stop path
+pbrforge url | code | discover    LAN helpers
+pbrforge tls init                 local HTTPS for LAN clients
+```
+
+Useful `make` flags:
+
+```text
+--preset generic-pbr|enscape|vray-6|corona|blender|unreal|unity|gltf|lumion
+--category unknown|brick|marble
+--resolution 512|1024|2048|4096
+--metal auto|none|full
+--height auto|normal|invert
+--auto-levels --white-balance --square
+--no-seamless --no-delight
+--open --json
+```
+
+---
+
+## 🗂️ Repository map
+
+```text
+pbrforge/                  Python package (authoritative)
+├─ core/                   params, typed image, PNG codec, colour gate, ops, pipeline
+├─ stages/                 the 15 stages, each with declared inputs/outputs
+├─ export/                 presets and writers
+├─ server/                 stdlib HTTP server, auth, discovery, upload/job/library/update API
+├─ jobs.py                 staging, worker, promotion, previews, zip, job records
+├─ update.py               GitHub release check, verification, silent installer launch
+├─ cli.py                  make/batch/library/config/update/serve/doctor/selftest
+└─ config.py               canonical TOML load/save and update settings
+ui/prototype.html          the dependency-free web app
+docs/                      design, pipeline, presets, QC, deployment and API notes
+installer/                 Inno Setup source template (not built/tested in 0.2.0)
+deploy/                    portable/LAN/service build scripts (not exercised in 0.2.0)
+```
+
+The root‑level `cli.py`, `config.py`, `core/`, and `server/` directories from the earlier scaffold
+have been removed. `pbrforge/` is the only implementation.
+
+---
+
+## 📚 Documentation
+
+| Read this | When |
+|---|---|
+| **[docs/WEB_APP.md](docs/WEB_APP.md)** | Using the web app, API routes, job lifecycle, library layout, update controls |
+| **[docs/CLI.md](docs/CLI.md)** | Exact command syntax and examples |
+| **[docs/UPDATES.md](docs/UPDATES.md)** | Release check, verification and installer contract |
+| **[docs/PIPELINE.md](docs/PIPELINE.md)** | Algorithm design, every stage and parameter |
+| **[docs/PRESETS.md](docs/PRESETS.md)** | Renderer setup and map conventions |
+| **[docs/QC_METRICS.md](docs/QC_METRICS.md)** | Metric formulas, thresholds and what “warn” means |
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | How the pieces fit together |
+| **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** | Symptom → cause → fix |
+| **[INSTALLATION.md](INSTALLATION.md)** | Source setup and environment notes |
+| **[DEPLOYMENT.md](DEPLOYMENT.md)** | LAN, HTTPS, firewall and service notes |
+| **[CHANGELOG.md](CHANGELOG.md)** | What changed and what is still planned |
+
+### Known limits in 0.2.0
+
+- **PNG only** in the Python pipeline. The browser converts what it can decode before upload.
+- **One worker by default.** 1024 px synthetic brick ≈ 43 s; 512 px ≈ 10 s; 256 px ≈ 3 s on the test machine.
+- **No real photograph has been calibrated yet.** The synthetic brick fixture and metric vectors are green; photographic tuning is the next honest step.
+- **No Windows installer or GitHub Release is published.** Update checking is implemented and returns an honest “no release” result until one exists.
+- **AI upscale, matting and seam refinement are absent by design**, not silently stubbed.
+
+---
+
+## 🛡️ Privacy and licence
+
+- Files stay on this machine unless you explicitly open the GitHub update check.
+- No accounts, analytics, telemetry, model downloads or training on your images.
+- **Personal use only.** See [LICENSE.txt](LICENSE.txt).
+
+---
+
+<p align="center"><em>Made for a personal texture library. The export is the product.</em></p>

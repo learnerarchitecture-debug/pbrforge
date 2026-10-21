@@ -7,7 +7,7 @@ Pillow, torch) is an optional layer that the pipeline stages use when present an
 makes `pbrforge serve` work on a machine that has never had pip run on it.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["__version__", "APP_NAME", "APP_SLUG", "USER_AGENT"]
 
 APP_NAME = "PBRForge"

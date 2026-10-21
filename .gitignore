@@ -1,0 +1,33 @@
+# Python bytecode / tooling
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Local runtime state
+library/
+cache/
+*.pid
+*.log
+config.toml
+.pbrforge_stage_keys.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+
+# Secrets and certificates
+*.pem
+*.key
+.env

@@ -2,7 +2,7 @@
 ;  pbrforge.iss -- Inno Setup script for PBRForge-Setup-<version>.exe
 ;
 ;  Build with:  deploy\build-installer.ps1
-;  Or directly: iscc installer\pbrforge.iss /DAppVersion=0.1.0
+;  Or directly: iscc installer\pbrforge.iss /DAppVersion=0.2.0
 ;
 ;  Design decisions, in the order they matter:
 ;
@@ -29,7 +29,7 @@
 ; =============================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef SourceRoot
   ; Default assumes the script sits in <root>\installer\

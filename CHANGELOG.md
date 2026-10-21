@@ -9,7 +9,60 @@ at `0.3.9` because the hash pins the code path, parameters and model versions th
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-10-21
+
+The first release where a photo can actually become a finished material through the browser.
+
+### Added
+
+- **Web app** (`ui/prototype.html`): drag/drop or choose an image, client-side conversion to PNG,
+  job options, live progress, stage notes, a WebGL lit preview, 2x2 tiled map views, QC verdict,
+  map/zip downloads and a persistent library browser.
+- **Job orchestration** (`pbrforge/jobs.py`): validated uploads, staging, one worker, progress,
+  promotion into the library, previews, `README.txt`, zip, `job.json`, post-restart lookup.
+- **Fifteen pipeline stages**: ingest, preprocess, lattice, seamless, delight, derive_height,
+  derive_normal, derive_ao, derive_rough, derive_metal, variation, alphamatte, upscale, pack, qc.
+- **CLI**: `make`, `batch`, `library`, `config --set`, `update --check/--install`.
+- **Canonical config writer**: `Config.save()` and `[updates]` fields.
+- **Update system**: GitHub latest-release check, semver comparison, expected asset selection,
+  size/SHA-256 verification, silent Inno launch, cached checks, honest failure states.
+- **Documentation**: `docs/WEB_APP.md`, `docs/CLI.md`, `docs/UPDATES.md`, rewritten README.
+
+### Changed
+
+- Auto-levels is **off by default** in the web app, job API and CLI; percentile stretching was
+  crushing brick shadows. It remains available explicitly.
+- Metalness `auto` returns dielectric with confidence 0 and a warning instead of guessing.
+- Brick height defaults to inverted so light mortar is recessed.
+- AO is computed from a high-pass height field so dark albedo does not create false cavities.
+- Macro variation is deliberately non-tiling and exported separately.
+- Upscale remains a declared disabled path; there is no silent bilinear substitute.
+- The web app's job default is 1024 px; the config default remains 4096 for non-job defaults.
+
+### Fixed
+
+- Wrap-aware box blur off-by-one.
+- Pipeline progress callback and `stage_key()` lookup.
+- Library records showing `0.0 s` because `job.json` was written before the finish stamp.
+- Result panel scrolling under the sticky topbar.
+- Map-view tabs doing nothing after render.
+- Library detail reporting no map dimensions.
+
+### Verified
+
+- `python -m pbrforge selftest`: 18/18.
+- `check_seamless.py`: ramp `e=191 -> 1`, flat `e=1.00 -> 100`, brick `e=1.00 -> 100`.
+- `check_pack.py`: export layout and colour-space gates.
+- Synthetic brick end-to-end at 256, 512 and 1024 px; browser upload, progress, result, library
+  detail, seven map downloads and zip download exercised.
+- `Config.save()` round-trip and CLI `make` / `library` / `config --set` / `update`.
+
+### Not shipped in this release
+
+- No compiled Windows installer and no GitHub Release. The update path correctly reports that no
+  release exists; it does not claim an update it cannot install.
+- No real-photo calibration yet; the synthetic fixture is green but photographic tuning remains.
+- No AI upscale, matting or seam refinement.
 
 ### Planned — Phase 1 (core)
 
