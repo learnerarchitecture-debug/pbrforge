@@ -1,5 +1,10 @@
 # AI Features
 
+> **Status: not implemented in PBRForge 2.0.** This is a design document for a possible future layer,
+> not a description of shipped behaviour. There is no model download, no inference runtime and no
+> prompt-to-texture feature in the product. The README and `pbrforge doctor` say so plainly, and the
+> classical pipeline never depends on AI.
+
 AI is a **refinement layer**, never the pipeline. Everything it touches is off by default, labelled
 in the UI, pinned to a seed and a model version, reversible in one click, and has a deterministic
 classical alternative sitting right next to it.

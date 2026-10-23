@@ -1,5 +1,10 @@
 # UI Design
 
+> **Design reference, not a shipped-feature list.** The 2.0.0 interface is
+> [`../ui/prototype.html`](../ui/prototype.html): Auto Forge plus Studio Lab, with a WebGL
+> lit preview. Sections below that discuss WebGPU, node graphs or local AI describe proposals
+> and were not implemented. See the status table in [README.md](../README.md).
+
 The interface is the product. The algorithms are published papers; the thing you actually live
 with every day is whether the tool tells you the truth quickly and gets out of the way.
 
@@ -430,8 +435,8 @@ Non-negotiable even for personal use — it costs nothing to do now and everythi
 
 - The prototype uses plain CSS custom properties and no framework, so the tokens above can be
   lifted verbatim into whatever front end gets used.
-- The shipped UI should be **WebGPU with a WebGL2 fallback** — WebGPU matters for 4k tiling
-  previews with mip-mapping at 60 fps, and for compute-shader previews of heavy derivative maps.
+- The 2.0.0 viewport is **WebGL**. A WebGPU renderer was a design proposal for 4k tiling previews
+  with mip-mapping; it was not implemented, and the shipped build makes no WebGPU claim.
 - The preview engine is the *same* PNG-math as the pipeline: normals are derived from height,
   roughness is modulated, colour spaces are converted in the shader with an explicit
   `pow(2.2)` on the albedo path. If they diverge, the preview stops being a QC tool.

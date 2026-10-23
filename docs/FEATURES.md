@@ -1,5 +1,10 @@
 # Features
 
+> **Status note:** this is the historical build plan and suggestion list, kept for context. For what
+> actually ships, see the feature-status table in [README.md](../README.md) and
+> [CHANGELOG.md](../CHANGELOG.md). Items here that name AI, EXR or other deferred work are **not**
+> implemented.
+
 Two parts:
 
 - **§1** — the build list (what is required, in order).

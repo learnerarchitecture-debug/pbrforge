@@ -234,9 +234,10 @@ unavoidable; the alternative is shorter hash prefixes, which risks collisions.
 
 ### C7. The UI does not load, or the viewport is blank
 
-1. Check the console for a WebGPU error; Chrome/Edge 113+ is required for the WebGPU path.
-2. Older builds fall back to WebGL2 automatically; if the fallback also fails, the shader did not
-   compile — check the browser console for the GLSL error log.
+1. Check the browser console for a WebGL error. The 2.0.0 viewport uses WebGL; if a context
+   cannot be created, hardware acceleration may be disabled in the browser.
+2. If the shader failed to compile, the console names the GLSL error. The viewer falls back to the
+   albedo map rather than showing a blank canvas.
 3. `127.0.0.1:7788` blocked by a firewall rule or another process. Change the port in the config.
 
 ### C8. Batch job stops overnight
@@ -287,7 +288,7 @@ suppressed default is **keep your textures**.
 Run it from a console so you can see the log:
 
 ```powershell
-.\PBRForge-Setup-0.2.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\pbrforge-install.log
+.\PBRForge-Setup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=%TEMP%\pbrforge-install.log
 ```
 
 Then read `%TEMP%\pbrforge-install.log`. The two things that actually go wrong are a leftover

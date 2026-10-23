@@ -59,10 +59,10 @@ for name in ("README.md", "INSTALLATION.md", "DEPLOYMENT.md", "LICENSE.txt"):
 # one, and between an installer that works on a clean PC and one that fails at
 # import time on a machine with a different NumPy.
 #
-# Rule: the frozen exe is the SERVER and the CLI. It is stdlib-only on purpose
-# (see pbrforge/server/simple.py). The imaging stack is used from a venv when the
-# pipeline stages need it. So everything heavy is excluded, and `pbrforge doctor`
-# reports what is missing rather than the exe carrying it.
+# Rule: the frozen exe is the full local studio. The imaging pipeline, server,
+# CLI and PNG codec are stdlib-only; `cryptography` is bundled for vaults,
+# Ed25519 release verification and TLS. Heavy scientific/ML stacks are excluded,
+# and `pbrforge doctor` reports what is available instead of carrying a 2 GB venv.
 # -----------------------------------------------------------------------------
 excludes = [
     # --- scientific / ML stacks: hundreds of MB, not used by the frozen path ---
@@ -82,11 +82,10 @@ excludes = [
     "sqlite3", "pydoc_data", "test", "tests", "lib2to3",
 ]
 
-# `cryptography` is optional at runtime (only `pbrforge tls init` needs it) but
-# it is small, has no compiled dependencies of its own in modern wheels, and
-# bundling it means LAN HTTPS works out of the box on a machine that has never
-# run pip. If the build machine lacks it the exe still builds and `doctor` says
-# so -- it is a graceful degradation, not a build failure.
+# `cryptography` is required for the v2 vault, Ed25519 release signatures and
+# `pbrforge tls init`. It is small and has no Python-level compiled dependencies
+# of its own in modern wheels. Bundling it means a clean PC gets encrypted
+# backups and signed updates without ever running pip.
 hiddenimports = [
     "pbrforge.server.simple",
     "pbrforge.server.auth",
@@ -94,6 +93,20 @@ hiddenimports = [
     "pbrforge.core.png",
     "pbrforge.core.cache",
     "pbrforge.core.synth",
+    "pbrforge.security",
+    "pbrforge.surface",
+    "pbrforge.capture",
+    "pbrforge.project",
+    "pbrforge.setdoctor",
+    "pbrforge.delivery",
+    "pbrforge.library",
+    "pbrforge.watch",
+    "pbrforge.plugins",
+    "cryptography",
+    "cryptography.hazmat.primitives.ciphers.aead",
+    "cryptography.hazmat.primitives.kdf.scrypt",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
+    "cryptography.hazmat.primitives.serialization",
 ]
 
 a = Analysis(

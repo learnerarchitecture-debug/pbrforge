@@ -1,13 +1,14 @@
 """PBRForge -- local, personal texture tool.
 
-Design constraint that shapes this whole package: the *installable* build must run
-with nothing but the Python standard library. Everything heavy (numpy, libvips,
-Pillow, torch) is an optional layer that the pipeline stages use when present and
-`doctor` reports on. That is what makes a single-file installer possible and what
-makes `pbrforge serve` work on a machine that has never had pip run on it.
+Design constraint that shapes this whole package: the imaging pipeline, server,
+CLI and PNG codec are standard-library Python. The single runtime dependency is
+`cryptography`, used only for the encrypted vault, Ed25519 release verification
+and local TLS certificates; the Windows installer bundles it. Heavy imaging and
+ML stacks are deliberately absent. That is what keeps the portable build small
+and makes `pbrforge serve` work on a machine that has never had pip run on it.
 """
 
-__version__ = "0.2.0"
+__version__ = "2.0.0"
 __all__ = ["__version__", "APP_NAME", "APP_SLUG", "USER_AGENT"]
 
 APP_NAME = "PBRForge"

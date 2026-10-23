@@ -25,6 +25,7 @@ separation* between the two cases rather than that both produce plausible number
 from __future__ import annotations
 
 import http.cookiejar
+import http.client
 import json
 import math
 import os
@@ -810,11 +811,80 @@ def test_server(ws: Workspace) -> Result:
         code = auth.pairing_code().replace("-", "")
         status, headers, _ = _request(base + "/pair", method="POST", jar=jar,
                                       follow=False, data=f"code={code}".encode())
-        if status != 302 or f"{COOKIE_NAME}=" not in headers.get("Set-Cookie", ""):
+        pair_cookie = headers.get("Set-Cookie", "")
+        if status != 302 or f"{COOKIE_NAME}=" not in pair_cookie:
             return Result("server", False,
                           f"pairing returned {status}, Set-Cookie={headers.get('Set-Cookie')!r}")
+        for flag in ("HttpOnly", "SameSite=Strict"):
+            if flag.lower() not in pair_cookie.lower():
+                return Result("server", False,
+                              f"the session cookie is missing {flag}",
+                              "a script or cross-site form could steal the session")
         if not any(c.name == COOKIE_NAME for c in jar):
             return Result("server", False, "the session cookie was not retained by the client")
+
+        # 6a. A privacy-hardened browser can report Origin: null for a
+        # same-origin form.  Sec-Fetch-Site distinguishes that from a real
+        # cross-site post, so pairing must keep working without weakening the
+        # cross-site refusal below.
+        status, _, _ = _request(base + "/pair", method="POST", jar=jar,
+                                follow=False, data=f"code={code}".encode(),
+                                headers={"Origin": "null",
+                                         "Sec-Fetch-Site": "cross-site"})
+        if status != 403:
+            return Result("server", False,
+                          f"a null-origin cross-site pair returned {status}, not 403")
+        status, headers, _ = _request(base + "/pair", method="POST", jar=jar,
+                                      follow=False, data=f"code={code}".encode(),
+                                      headers={"Origin": "null",
+                                               "Sec-Fetch-Site": "same-origin"})
+        if status != 302 or f"{COOKIE_NAME}=" not in headers.get("Set-Cookie", ""):
+            return Result("server", False,
+                          "a same-origin form with Origin: null could not pair")
+
+        # 6b. CSRF: a write needs both the session and the token handed out by
+        # /api/session.  SameSite alone is not a substitute for an origin check.
+        status, _, body = _request(base + "/api/session", jar=jar)
+        if status != 200:
+            return Result("server", False, f"/api/session returned {status}")
+        csrf = json.loads(body).get("csrf")
+        if not csrf:
+            return Result("server", False, "/api/session did not return a CSRF token")
+        status, _, _ = _request(base + "/api/settings", method="POST", jar=jar,
+                                data=b"{}", headers={"Content-Type": "application/json"})
+        if status != 403:
+            return Result("server", False,
+                          f"a write without a CSRF token returned {status}, not 403")
+        status, _, _ = _request(base + "/api/settings", method="POST", jar=jar,
+                                data=b"{}", headers={
+                                    "Content-Type": "application/json",
+                                    "X-CSRF-Token": csrf,
+                                    "Origin": "http://evil.example"})
+        if status != 403:
+            return Result("server", False,
+                          f"a cross-origin write returned {status}, not 403")
+        status, _, _ = _request(base + "/api/settings", method="POST", jar=jar,
+                                data=b'{"update_check": true}', headers={
+                                    "Content-Type": "application/json",
+                                    "X-CSRF-Token": csrf,
+                                    "Origin": base})
+        if status != 200:
+            return Result("server", False,
+                          f"a same-origin write with CSRF returned {status}, not 200")
+
+        # 6c. A DNS-rebinding Host header is refused before auth.
+        conn = http.client.HTTPConnection("127.0.0.1", running.bound_port, timeout=6)
+        try:
+            conn.request("GET", "/api/health", headers={"Host": "evil.example"})
+            response = conn.getresponse()
+            host_status = response.status
+            response.read()
+        finally:
+            conn.close()
+        if host_status != 400:
+            return Result("server", False,
+                          f"a rebinding Host header returned {host_status}, not 400",
+                          "DNS rebinding could reach the library")
 
         status, _, body = _request(base + "/api/health", jar=jar)
         if status != 200:
@@ -832,6 +902,12 @@ def test_server(ws: Workspace) -> Result:
         if "Content-Length" not in headers:
             return Result("server", False, "the response had no Content-Length",
                           "HTTP/1.1 keep-alive will hang the browser without it")
+        csp = headers.get("Content-Security-Policy", "")
+        if "frame-ancestors 'none'" not in csp or "object-src 'none'" not in csp:
+            return Result("server", False, "the shell is missing key CSP directives",
+                          "set frame-ancestors and object-src to 'none'")
+        if headers.get("X-Content-Type-Options") != "nosniff":
+            return Result("server", False, "the shell is missing X-Content-Type-Options: nosniff")
 
         # 8. Path traversal is refused, and refused explicitly.
         for attack in ("/ui/../config.py", "/ui/..%2fconfig.py", "/ui/../../secret.key"):
@@ -848,16 +924,208 @@ def test_server(ws: Workspace) -> Result:
             return Result("server", False, f"an unknown route returned {status}")
 
         return Result("server", True,
-                      f"ping, 401, pair, session, shell ({len(body)} byte 404 page) all correct")
+                      f"ping, 401, pair, CSRF, Origin and Host checks, shell "
+                      f"({len(body)} byte 404 page) all correct")
     finally:
         running.stop()
         time.sleep(0.15)
 
 
+def test_security(ws: Workspace) -> Result:
+    """Encryption is only a feature if tampering and wrong keys actually fail."""
+    from . import security
+
+    root = ws.root / "security"
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / "payload.bin"
+    payload = bytes((index * 37 + 11) & 0xFF for index in range(1_300_000))
+    source.write_bytes(payload)
+    vault = root / "payload.pbrvault"
+    passphrase = "selftest-correct-horse-battery-staple"
+    info = security.encrypt_file(source, vault, passphrase)
+    if not vault.is_file() or info.get("chunks", 0) < 2:
+        return Result("security", False,
+                      "the encrypted vault did not contain multiple chunks")
+    restored = root / "restored.bin"
+    result = security.decrypt_file(vault, restored, passphrase)
+    if restored.read_bytes() != payload:
+        return Result("security", False, "a vault round trip changed the plaintext")
+    try:
+        security.decrypt_file(vault, root / "wrong.bin", "not-the-right-passphrase")
+        return Result("security", False, "the wrong passphrase decrypted the vault")
+    except security.SecurityError:
+        pass
+    damaged = bytearray(vault.read_bytes())
+    damaged[len(damaged) // 2] ^= 1
+    bad_vault = root / "damaged.pbrvault"
+    bad_vault.write_bytes(damaged)
+    try:
+        security.decrypt_file(bad_vault, root / "damaged.bin", passphrase)
+        return Result("security", False, "a tampered vault decrypted successfully")
+    except security.SecurityError:
+        pass
+    try:
+        security.decrypt_file(vault, root / "truncated.bin", passphrase) if False else None
+    except Exception:  # pragma: no cover - exercised below with a real truncation
+        pass
+    truncated = root / "truncated.pbrvault"
+    truncated.write_bytes(vault.read_bytes()[: len(vault.read_bytes()) // 3])
+    try:
+        security.decrypt_file(truncated, root / "truncated.bin", passphrase)
+        return Result("security", False, "a truncated vault decrypted successfully")
+    except security.SecurityError:
+        pass
+
+    # The end marker must not mask an empty payload, nor a payload whose bytes
+    # happen to equal the marker text.
+    for name, data in (("empty.bin", b""),
+                       ("marker.bin", b"pbrforge-vault-end")):
+        plain = root / name
+        plain.write_bytes(data)
+        vault_path = root / (name + ".pbrvault")
+        security.encrypt_file(plain, vault_path, passphrase, n=2 ** 14)
+        out = root / (name + ".out")
+        security.decrypt_file(vault_path, out, passphrase)
+        if out.read_bytes() != data:
+            return Result("security", False,
+                          f"vault round trip changed {name} ({len(data)} bytes)")
+
+    # Exercise the user-facing backup archive, not only the encryption primitive:
+    # create_backup zips config/ and library/, restore_backup extracts them into a
+    # new folder and must refuse to write into a non-empty one.
+    backup_config = root / "backup-config"
+    backup_library = root / "backup-library"
+    (backup_config / "tls").mkdir(parents=True)
+    (backup_config / "config.toml").write_text("# selftest config\n", encoding="utf-8")
+    (backup_config / "secret.key").write_bytes(b"selftest-secret")
+    (backup_config / "tls" / "ca.pem").write_text("selftest-ca\n", encoding="utf-8")
+    (backup_library / "material").mkdir(parents=True)
+    (backup_library / "material" / "albedo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + payload[:64])
+    backup = root / "studio.pbrvault"
+    made = security.create_backup(backup_config, backup_library, backup, passphrase)
+    if made.get("files", 0) < 4 or not backup.is_file():
+        return Result("security", False, "the backup archive omitted config or library files")
+    restored_dir = root / "restored-backup"
+    got = security.restore_backup(backup, passphrase, restored_dir)
+    if not (restored_dir / "config" / "config.toml").is_file():
+        return Result("security", False, "restore did not recreate the config tree")
+    if (restored_dir / "library" / "material" / "albedo.png").read_bytes() != (
+            b"\x89PNG\r\n\x1a\n" + payload[:64]):
+        return Result("security", False, "restore changed a library file")
+    if not (restored_dir / "PBRFORGE_VAULT.json").is_file():
+        return Result("security", False,
+                      f"restore omitted the manifest ({got.get('files')} entries)")
+    try:
+        security.restore_backup(backup, passphrase, restored_dir)
+        return Result("security", False,
+                      "restore overwrote a non-empty folder without --overwrite")
+    except security.SecurityError:
+        pass
+
+    private_key = root / "private.pem"
+    public_key = root / "public.pem"
+    security.generate_signing_key(private_key, public_key)
+    signature = security.sign_file(source, private_key)
+    if not security.verify_file_signature(source, signature, public_key):
+        return Result("security", False, "a valid Ed25519 signature did not verify")
+    if security.verify_file_signature(vault, signature, public_key):
+        return Result("security", False, "a signature verified against the wrong file")
+    return Result("security", True,
+                  f"{result.get('chunks')} authenticated chunks, random tamper, "
+                  "truncation and wrong-key refused, backup/restore round trip, "
+                  "empty/marker round trips, Ed25519 verified")
+
+
+def test_studio(ws: Workspace) -> Result:
+    """Surface Lab, capture merge, project store, Set Doctor and delivery."""
+    from . import capture, delivery, library, project, setdoctor, surface
+
+    root = ws.root / "studio"
+    surface_dir = root / "surface"
+    generated = surface.generate(surface.SurfaceSpec(pattern="brick", size=128,
+                                                     seed=7, weathering="dust"))
+    if generated.albedo.width != 128 or generated.normal is None:
+        return Result("studio", False, "Surface Lab did not produce the expected maps")
+    files = surface.write_maps(generated, surface_dir)
+    if not all((surface_dir / f"{name}.png").is_file()
+               for name in ("albedo", "height", "normal", "roughness", "ao")):
+        return Result("studio", False, f"Surface Lab wrote an incomplete set: {files}")
+
+    frames = []
+    for index, scale in enumerate((0.85, 1.15), start=1):
+        data = bytearray()
+        for value in generated.albedo.data:
+            data.append(max(0, min(255, round(value * scale))))
+        frame = png.Image(generated.albedo.width, generated.albedo.height,
+                          generated.albedo.channels, 8, bytes(data))
+        path = root / f"frame-{index}.png"
+        png.write(path, frame)
+        frames.append(path)
+    merged = root / "merged.png"
+    capture_info = capture.merge(frames, merged, mode="median", normalize=True)
+    if capture_info.frames != 2 or png.read(merged).width != 128:
+        return Result("studio", False, "capture merge did not produce a valid frame")
+
+    report = setdoctor.scan(surface_dir)
+    if not report.maps:
+        return Result("studio", False, "Set Doctor found no maps in a generated set")
+    # A failed repack must not leave a half-repaired folder.  The generated
+    # set has no metallic map, so ORM repacking has to refuse during preflight,
+    # before the output directory is created.
+    from .core.errors import PbrForgeError
+    refused_out = root / "refused-repair"
+    try:
+        setdoctor.repair(surface_dir, refused_out, repack="orm")
+    except PbrForgeError:
+        pass
+    else:
+        return Result("studio", False, "Set Doctor repacked a set with no metallic map")
+    if refused_out.exists():
+        return Result("studio", False,
+                      "a failed Set Doctor repair left an output folder behind")
+
+    repaired = root / "repaired"
+    setdoctor.repair(surface_dir, repaired, rename=True)
+    if not (repaired / "albedo.png").is_file():
+        return Result("studio", False, "Set Doctor did not write canonical map names")
+
+    delivered = delivery.generate(surface_dir, output=root / "delivery")
+    for name in ("material.mtlx", "material.gltf", "material.usda",
+                 "blender_material.py"):
+        if not (root / "delivery" / name).is_file():
+            return Result("studio", False, f"delivery did not write {name}")
+    gltf = json.loads((root / "delivery" / "material.gltf").read_text(encoding="utf-8"))
+    if not gltf.get("images"):
+        return Result("studio", False, "the glTF delivery has no image references")
+
+    store = project.ProjectStore(root / "projects")
+    created = store.create("Studio test", (surface_dir / "albedo.png").read_bytes(),
+                           source_name="albedo.png",
+                           layers=[{"kind": "grade", "brightness": 0.08}])
+    loaded, _ = store.load(created.id)
+    if len(loaded.layers) != 1 or loaded.layers[0].get("kind") != "grade":
+        return Result("studio", False, "the project layer stack did not round trip")
+    store.delete(created.id)
+
+    updated = library.update(surface_dir, {"tags": ["brick", "studio"],
+                                            "favorite": True})
+    if updated.get("tags") != ["brick", "studio"] or not updated.get("favorite"):
+        return Result("studio", False, "library metadata did not round trip")
+    filtered = library.filter_items([library.merge({"name": "Studio", "slug": "studio"},
+                                                    surface_dir)],
+                                    query="studio", tag="brick", favorite=True)
+    if len(filtered) != 1:
+        return Result("studio", False, "library filtering lost a matching material")
+    return Result("studio", True,
+                  f"surface {len(files)} maps · capture {capture_info.frames} frames · "
+                  "project stack · doctor preflight/repair · MaterialX/glTF/USD · "
+                  "library filters")
+
+
 def test_redirect(ws: Workspace) -> Result:
     """With TLS on, plain HTTP must send the client to HTTPS. Without this, a user
     who types the IP without a scheme lands on an insecure origin and silently
-    loses WebGPU -- and will report it as a GPU bug."""
+    loses secure-context APIs and will report it as a browser quirk."""
     cfg = ws.cfg
     from .server.auth import Auth
     from .server.simple import App, RedirectHandler, Server
@@ -909,9 +1177,9 @@ def test_tls(ws: Workspace) -> Result:
     if exe:
         backends.append(("openssl", lambda c, d, i: tlsmod._init_openssl(c, d, i, exe)))
     if not backends:
-        # An honest skip. The frozen build is deliberately stdlib-only and a clean
-        # machine may have no openssl either; failing here would make a correct
-        # build look broken, which is worse than not testing.
+        # An honest skip: a build may omit cryptography and a clean machine may
+        # have no openssl; failing here would make a correct build look broken,
+        # which is worse than not testing.
         return Result("tls", True,
                       f"skipped: no backend ({tlsmod._crypto_available()[1]}, "
                       f"and no openssl on PATH or in the usual install locations)")
@@ -1130,7 +1398,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _request(url: str, *, method: str = "GET", data: bytes | None = None,
              jar: http.cookiejar.CookieJar | None = None, follow: bool = True,
-             timeout: float = 6.0) -> tuple[int, dict, bytes]:
+             timeout: float = 6.0, headers: dict[str, str] | None = None
+             ) -> tuple[int, dict, bytes]:
     """Returns (status, headers, body). Redirects are followed only if asked.
 
     The opener is assembled here from a cookie jar and a follow flag rather than
@@ -1149,8 +1418,11 @@ def _request(url: str, *, method: str = "GET", data: bytes | None = None,
 
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("User-Agent", f"PBRForge-selftest/{__version__}")
-    if data is not None:
+    custom = {key.lower() for key in (headers or {})}
+    if data is not None and "content-type" not in custom:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
     try:
         with opener.open(req, timeout=timeout) as resp:
             return resp.status, dict(resp.headers), resp.read()
@@ -1333,6 +1605,8 @@ TESTS: list[tuple[str, Callable[[Workspace], Result], bool]] = [
     ("resample tiling", test_resample_tiling, True),
     ("resample normals", test_resample_normals, True),
     ("image io", test_image_io, True),
+    ("security", test_security, True),
+    ("studio", test_studio, True),
     ("server", test_server, True),
     ("redirect", test_redirect, True),
     # Generates a real certificate with every available backend and completes a
@@ -1408,7 +1682,7 @@ def render(results: list[Result], root: Path, kept: bool) -> str:
         lines.append(f"  {passed} passed \u00b7 all good \u00b7 {total:.1f}s")
         lines.append("")
         lines.append("  This machine can host the server and other PCs can use it.")
-        lines.append("  Next:  pbrforge tls init   (HTTPS, so LAN clients get WebGPU)")
+        lines.append("  Next:  pbrforge tls init   (HTTPS for secure-context browser APIs)")
         lines.append("         pbrforge serve      (then open the LAN URL on another PC)")
     if kept:
         lines.append(f"\n  workspace kept: {root}")

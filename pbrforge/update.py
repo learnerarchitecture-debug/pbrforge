@@ -1,4 +1,7 @@
-"""GitHub release checking and silent installation. Standard library only.
+"""GitHub release checking and silent installation.
+
+The network client is standard library; Ed25519 verification uses the bundled
+`cryptography` package through `pbrforge.security`.
 
 The tool is personal and local, so the update path is deliberately small and
 inspectable:
@@ -7,7 +10,8 @@ inspectable:
   * semantic-version comparison against ``__version__``;
   * an explicit asset choice (the Inno Setup installer), never "whatever .exe is
     first";
-  * SHA-256 verification when GitHub supplies a digest, size verification always;
+  * SHA-256 and size verification, plus an Ed25519 signature over the exact
+    installer bytes for v2.0 and later;
   * an Inno Setup silent install, launched only by an explicit click or an
     explicit config flag.
 
@@ -41,6 +45,17 @@ __all__ = [
 
 DEFAULT_REPO = "learnerarchitecture-debug/pbrforge"
 API = "https://api.github.com/repos/{repo}/releases/latest"
+
+# The release signing key is intentionally embedded, not loaded from the config
+# directory.  An attacker who can replace a key file next to the app can sign a
+# malicious installer; a key compiled into the binary has to be replaced along
+# with the binary, which is the same trust boundary as the update code itself.
+# The matching private key is never in this repository.
+RELEASE_PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAUprD27Kb0eIq5Cnz4VjxPXBjU6GHM62sLUENft4H9RA=
+-----END PUBLIC KEY-----
+"""
+MIN_SIGNED_VERSION = (2, 0, 0)
 
 
 def parse_version(text: str) -> tuple[int, int, int, int]:
@@ -80,6 +95,10 @@ class Update:
     asset_url: str = ""
     asset_size: int = 0
     digest: str = ""
+    signature_name: str = ""
+    signature_url: str = ""
+    signature_size: int = 0
+    verified_signature: bool = False
     error: str = ""
     checked_at: float = field(default_factory=time.time)
 
@@ -96,6 +115,10 @@ class Update:
             "asset_url": self.asset_url,
             "asset_size": self.asset_size,
             "digest": self.digest,
+            "signature_name": self.signature_name,
+            "signature_url": self.signature_url,
+            "signature_size": self.signature_size,
+            "verified_signature": self.verified_signature,
             "error": self.error,
             "checked_at": self.checked_at,
         }
@@ -130,6 +153,16 @@ def _choose_asset(release: dict[str, Any], version: str) -> dict[str, Any] | Non
     for asset in assets:
         if asset.get("name", "").lower() == "pbrforge.exe":
             return asset
+    return None
+
+
+def _choose_signature(release: dict[str, Any], asset: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not asset:
+        return None
+    wanted = str(asset.get("name") or "") + ".sig"
+    for candidate in release.get("assets") or []:
+        if isinstance(candidate, dict) and candidate.get("name") == wanted:
+            return candidate
     return None
 
 
@@ -179,6 +212,14 @@ def check(repo: str = DEFAULT_REPO, *, timeout: float = 10.0) -> Update:
         update.asset_url = str(asset.get("browser_download_url") or "")
         update.asset_size = int(asset.get("size") or 0)
         update.digest = str(asset.get("digest") or "")
+        signature = _choose_signature(release, asset)
+        if signature is not None:
+            update.signature_name = str(signature.get("name") or "")
+            update.signature_url = str(signature.get("browser_download_url") or "")
+            update.signature_size = int(signature.get("size") or 0)
+        elif parse_version(version)[:3] >= MIN_SIGNED_VERSION:
+            update.error = ("this release has no Ed25519 signature; "
+                            "PBRForge will not auto-install it")
     return update
 
 
@@ -253,6 +294,40 @@ def download(update: Update, dest_dir: Path, *,
                 "the downloaded installer's SHA-256 does not match the release.\n"
                 "  why      the bytes differ from the ones GitHub published\n"
                 "  fix      do not run it; retry the download")
+        requires_signature = parse_version(update.latest)[:3] >= MIN_SIGNED_VERSION
+        if update.signature_url:
+            sig_part = part.with_name(part.name + ".sig")
+            try:
+                with urllib.request.urlopen(_request(update.signature_url,
+                                                     timeout=15), timeout=15) as response:
+                    sig_raw = response.read(256 * 1024)
+                if update.signature_size and len(sig_raw) != update.signature_size:
+                    raise LimitError(
+                        "the release signature is truncated.\n"
+                        "  why      its size does not match GitHub's metadata\n"
+                        "  fix      retry the update check")
+                try:
+                    signature = json.loads(sig_raw.decode("utf-8"))
+                except (ValueError, UnicodeError) as exc:
+                    raise LimitError(
+                        "the release signature is not valid JSON; refusing to run "
+                        "the installer") from exc
+                from . import security
+                if not security.verify_file_signature(
+                        part, signature, public_key_pem=RELEASE_PUBLIC_KEY_PEM):
+                    raise LimitError(
+                        "the installer's Ed25519 signature did not verify.\n"
+                        "  why      the download is not the file the release key signed\n"
+                        "  fix      do not run it; download from the official release page")
+                update.verified_signature = True
+            finally:
+                sig_part.unlink(missing_ok=True)
+        elif requires_signature:
+            raise LimitError(
+                "this release does not publish an Ed25519 signature.\n"
+                "  why      PBRForge 2.0+ requires a signature before auto-install\n"
+                "  fix      download the installer from the release page and verify "
+                "SHA256SUMS.txt manually, or ask the publisher to sign the asset")
         part.replace(target)
     except Exception:
         part.unlink(missing_ok=True)

@@ -73,12 +73,12 @@ case "$cmd" in
         if [ ! -f "$PBRFORGE_CONFIG_DIR/tls/ca.pem" ]; then
             log "No certificate yet. Creating one for this machine's addresses..."
             if python -m pbrforge tls init >/dev/null 2>&1; then
-                log "Certificate ready. LAN clients keep WebGPU."
+                log "Certificate ready. LAN clients get secure-context APIs."
             else
                 log "Could not create a certificate (the 'cryptography' package is"
                 log "not in this image). Serving HTTP. Browsers on other machines"
-                log "will fall back to WebGL2 for the preview; everything else is"
-                log "identical. Rebuild with --build-arg WITH_TLS=1 for HTTPS."
+                log "lose secure-context APIs; the WebGL preview still works."
+                log "Rebuild with --build-arg WITH_TLS=1 for HTTPS."
             fi
         fi
 

@@ -18,6 +18,7 @@ single-file build's size.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -358,7 +359,7 @@ def cmd_tls(args: argparse.Namespace) -> int:
         print(f"  config               tls = {str(cfg.tls).lower()}")
         if not cfg.tls:
             print("\n  TLS is off. Run 'pbrforge serve --tls' or set tls = true in the")
-            print("  config to use it. LAN clients on plain http lose WebGPU.\n")
+            print("  config to use it. LAN clients on plain http lose secure-context APIs.\n")
         else:
             print()
         return 0
@@ -374,7 +375,7 @@ def cmd_tls(args: argparse.Namespace) -> int:
         print(f"    trust-ca.ps1      run this on each client PC")
         print(f"    READ-ME.txt       instructions for the other machine")
         print(f"\n  Copy that folder to the other PC and run trust-ca.ps1 there.")
-        print(f"  Without it, browsers warn, and LAN clients fall back to WebGL2.\n")
+        print(f"  Without it, browsers warn, and LAN clients fall back to WebGL.\n")
         return 0
 
     # init
@@ -567,7 +568,12 @@ def cmd_library(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     manager = JobManager(cfg, workers=1)
     try:
-        materials = manager.list_library()
+        favorite = True if getattr(args, "favorite", False) else None
+        materials = manager.list_library(
+            query=getattr(args, "query", "") or "",
+            tag=getattr(args, "tag", "") or "",
+            favorite=favorite,
+            category=getattr(args, "category", "") or "")
         if args.json:
             print(json.dumps(materials, indent=2))
             return 0
@@ -582,8 +588,11 @@ def cmd_library(args: argparse.Namespace) -> int:
             qc = str(item.get("verdict") or "—")[:5]
             preset = str(item.get("preset") or "—")[:17]
             size = item.get("resolution")
-            size_text = f"{size}px" if size else "—"
-            print(f"  {name:<30} {qc:<6} {preset:<18} {size_text:>6}  {item.get('slug')}")
+            size_text = f"{size}px" if size else "-"
+            tags = ",".join(item.get("tags") or [])
+            star = "*" if item.get("favorite") else " "
+            print(f"  {name:<30} {qc:<6} {preset:<18} {size_text:>6} {star} {item.get('slug')}"
+                  + (f"  [{tags}]" if tags else ""))
         print()
         if args.open is not None:
             target = cfg.library / args.open if args.open else cfg.library
@@ -594,6 +603,422 @@ def cmd_library(args: argparse.Namespace) -> int:
         return 0
     finally:
         manager.shutdown()
+
+
+def _passphrase(confirm: bool = False) -> str:
+    from . import security
+    try:
+        first = getpass.getpass("  Vault passphrase (not echoed): ")
+        if confirm:
+            second = getpass.getpass("  Repeat passphrase: ")
+            if first != second:
+                raise security.SecurityError("the passphrases did not match")
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise security.SecurityError("no passphrase was entered") from exc
+    security.validate_passphrase(first)
+    return first
+
+
+def cmd_vault(args: argparse.Namespace) -> int:
+    from . import security
+    from .core.errors import PbrForgeError
+
+    try:
+        if args.action in ("inspect", "verify", "restore") and not args.vault:
+            return _fail("this action needs a vault path: pbrforge vault "
+                         f"{args.action} backup.pbrvault")
+        if args.action == "restore" and not args.output:
+            return _fail("restore needs a destination: --output DIR")
+        if args.action == "inspect":
+            info = security.inspect_vault(Path(args.vault).expanduser())
+            print(json.dumps(info, indent=2) if args.json else
+                  f"\n  vault    {info['path']}\n  bytes    {info['bytes']:,}\n"
+                  f"  format   v{info['version']}\n  sha256   {info['sha256']}\n")
+            return 0
+        if args.action == "verify":
+            info = security.verify_vault(Path(args.vault).expanduser(), _passphrase())
+            if args.json:
+                print(json.dumps(info, indent=2))
+            else:
+                print(f"\n  vault    {info['path']}\n  valid    yes\n"
+                      f"  entries  {info['entries']}\n")
+            return 0
+        if args.action == "restore":
+            target = Path(args.output).expanduser()
+            info = security.restore_backup(
+                Path(args.vault).expanduser(), _passphrase(), target,
+                overwrite=bool(args.overwrite))
+            print(f"\n  restored {info['files']} files to {info['path']}")
+            print("  Inspect the config/ and library/ folders before copying them over")
+            print("  a live installation.\n")
+            return 0
+        # backup
+        cfg = _cfg(args)
+        cfg.ensure_dirs()
+        target = (Path(args.output).expanduser() if args.output else
+                  cfg.config_dir / "backups" / security.default_backup_name())
+        info = security.create_backup(cfg.config_dir, cfg.library, target,
+                                      _passphrase(confirm=True))
+        print()
+        print(security.describe_backup(info))
+        print()
+        return 0
+    except (security.SecurityError, PbrForgeError, OSError) as exc:
+        return _fail(str(exc))
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    from . import security
+    from .core.errors import PbrForgeError
+    try:
+        if args.action == "keygen":
+            made = security.generate_signing_key(
+                Path(args.private).expanduser(), Path(args.public).expanduser())
+            print("\n  private  " + made["private"])
+            print("  public   " + made["public"])
+            print("\n  Never commit the private key. Publish only the public key,\n"
+                  "  and keep an offline copy of the private key for the next release.\n")
+            return 0
+        if args.action in ("sign", "verify") and not args.file:
+            return _fail(f"release {args.action} needs a file path")
+        if args.action == "sign" and not args.key:
+            return _fail("release sign needs --key PRIVATE.pem")
+        if args.action == "sign":
+            target = Path(args.file).expanduser()
+            payload = security.sign_file(target, Path(args.key).expanduser())
+            out = (Path(args.output).expanduser() if args.output
+                   else target.with_name(target.name + ".sig"))
+            out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8", newline="\n")
+            print(f"\n  signed  {target.name}\n  output  {out}\n"
+                  f"  sha256  {payload['sha256']}\n")
+            return 0
+        if args.action == "verify":
+            if not args.signature:
+                return _fail("release verify needs --signature FILE.sig")
+            ok = security.verify_file_signature(
+                Path(args.file).expanduser(), Path(args.signature).expanduser(),
+                Path(args.public).expanduser())
+            print(f"\n  signature  {'VALID' if ok else 'INVALID'}\n")
+            return 0 if ok else 1
+    except (security.SecurityError, PbrForgeError, OSError) as exc:
+        return _fail(str(exc))
+    return 2
+
+
+def cmd_security(args: argparse.Namespace) -> int:
+    from . import security
+    cfg = _cfg(args)
+    report = security.audit(cfg)
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0 if report["ready"] else 1
+    print(f"\n  security posture  ({'ready' if report['ready'] else 'needs attention'})\n")
+    for check in report["checks"]:
+        mark = "ok" if check["ok"] else "!!"
+        print(f"  {mark:<3} {check['name']:<20} {check['detail']}")
+        if not check["ok"] and check.get("fix"):
+            print(f"      fix  {check['fix']}")
+    print()
+    return 0 if report["ready"] else 1
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    from . import capture
+    from .core.errors import PbrForgeError
+    from .jobs import JobManager
+
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    output = (Path(args.out).expanduser() if args.out else
+              (Path("capture-merged.png") if not args.forge else
+               Path(cfg.temp) / "capture-merged.png"))
+    try:
+        result = capture.merge(args.frames, output, mode=args.mode,
+                               normalize=not args.no_normalize)
+    except PbrForgeError as exc:
+        return _fail(str(exc))
+    if not args.forge:
+        print(f"\n  merged  {result.frames} frames  ·  {result.width}x{result.height}\n"
+              f"  output  {result.output}\n  time    {result.seconds:.1f}s\n")
+        return 0
+    manager = JobManager(cfg, workers=1)
+    try:
+        job = manager.submit_file(
+            output, name=args.name or "Capture stack", preset=args.preset,
+            category=args.category, resolution=args.resolution, metal=args.metal,
+            seamless=not args.no_seamless, delight=not args.no_delight,
+            auto_levels=args.auto_levels, white_balance=args.white_balance,
+            square=args.square, height_polarity=args.height,
+        )
+        _wait_job(job, show_stages=not args.json)
+        if args.json:
+            print(json.dumps({"capture": result.to_dict(), "job": job.to_dict()}, indent=2))
+        else:
+            _print_job_result(job)
+        return 0 if job.state == "done" else 1
+    finally:
+        manager.shutdown()
+
+
+def cmd_surface(args: argparse.Namespace) -> int:
+    from .core.errors import PbrForgeError
+    from .jobs import JobManager
+    from .surface import PATTERNS, WEATHERINGS, SurfaceSpec, generate, write_maps
+
+    if args.list:
+        print("\n  patterns    " + ", ".join(PATTERNS))
+        print("  weathering  " + ", ".join(WEATHERINGS) + "\n")
+        return 0
+    spec = SurfaceSpec(pattern=args.pattern, size=args.size, seed=args.seed,
+                       weathering=args.weathering,
+                       weather_amount=args.weather_amount, variant=args.variant,
+                       rows=args.rows, cols=args.cols, mortar=args.mortar,
+                       hue=args.hue)
+    try:
+        result = generate(spec)
+    except PbrForgeError as exc:
+        return _fail(str(exc))
+    if not args.forge:
+        out = Path(args.out).expanduser() if args.out else Path(f"surface-{args.pattern}")
+        written = write_maps(result, out)
+        if args.json:
+            print(json.dumps({"surface": result.to_dict(), "files": written}, indent=2))
+        else:
+            print(f"\n  surface  {spec.pattern}  {spec.size}px  ·  {result.seconds:.1f}s")
+            print(f"  folder   {out}")
+            for name, path in written.items():
+                print(f"  {name:<9} {path}")
+            print()
+        return 0
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    manager = JobManager(cfg, workers=1)
+    try:
+        import tempfile
+        from .core import png
+        with tempfile.TemporaryDirectory(prefix="pbrforge-surface-") as tmp:
+            path = Path(tmp) / "surface.png"
+            png.write(path, result.albedo)
+            job = manager.submit_bytes(
+                path.read_bytes(), name=args.name or f"Surface {spec.pattern}",
+                preset=args.preset, category=args.category,
+                resolution=args.resolution, metal=args.metal,
+                seamless=not args.no_seamless, delight=not args.no_delight,
+                auto_levels=args.auto_levels, white_balance=args.white_balance,
+                square=args.square, height_polarity=args.height,
+                source_name=f"surface-{spec.pattern}.png")
+        _wait_job(job, show_stages=not args.json)
+        if args.json:
+            print(json.dumps({"surface": result.to_dict(), "job": job.to_dict()}, indent=2))
+        else:
+            _print_job_result(job)
+        return 0 if job.state == "done" else 1
+    finally:
+        manager.shutdown()
+
+
+def cmd_setdoctor(args: argparse.Namespace) -> int:
+    from . import setdoctor
+    from .core.errors import PbrForgeError
+
+    folder = Path(args.folder).expanduser()
+    try:
+        if not (args.normal or args.invert or args.repack or args.rename):
+            report = setdoctor.scan(folder)
+            if args.json:
+                print(json.dumps(report.to_dict(), indent=2))
+            else:
+                print(report.text())
+            return 0
+        out = Path(args.out).expanduser() if args.out else folder.with_name(folder.name + "-doctor")
+        result = setdoctor.repair(
+            folder, out, normal_to=args.normal or "", invert=args.invert or "",
+            repack=args.repack or "", rename=bool(args.rename),
+            overwrite=bool(args.overwrite))
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            print(result["report"]["folder"])
+            print()
+            for action in result["actions"]:
+                print(f"  {action}")
+            print(f"\n  output  {result['output']}\n")
+        return 0
+    except PbrForgeError as exc:
+        return _fail(str(exc))
+
+
+def cmd_deliver(args: argparse.Namespace) -> int:
+    from . import delivery
+    from .core.errors import PbrForgeError
+    try:
+        payload = delivery.generate(
+            Path(args.material).expanduser(),
+            output=Path(args.out).expanduser() if args.out else None,
+            name=args.name)
+    except PbrForgeError as exc:
+        return _fail(str(exc))
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print("\n" + delivery.describe(payload) + "\n")
+    return 0
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    from .core.errors import PbrForgeError
+    from .jobs import JobManager
+    from .project import ProjectStore, project_summary
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    store = ProjectStore(Path(cfg.config_dir) / "projects")
+    try:
+        if args.action == "list":
+            items = store.list()
+            if args.json:
+                print(json.dumps([project_summary(p) for p in
+                                  [store.load(item["id"])[0] for item in items]], indent=2))
+            else:
+                if not items:
+                    print("\n  no projects yet\n")
+                    return 0
+                print(f"\n  {'id':<28} {'layers':>6} {'size':>11}  name")
+                for item in items:
+                    print(f"  {item.get('id', ''):<28} {len(item.get('layers') or []):>6} "
+                          f"{item.get('width', '?')}x{item.get('height', '?')}  {item.get('name')}")
+                print()
+            return 0
+        if args.action != "create" and not args.id:
+            return _fail(f"project {args.action} needs a project id")
+        if args.action == "create":
+            # The positional grammar is `project <action> [ID] [SOURCE]`.  For
+            # create there is one positional, so argparse puts it in `id`.
+            source_arg = args.source or args.id
+            if not source_arg:
+                return _fail("project create needs a source PNG")
+            layers = json.loads(Path(args.layers).read_text(encoding="utf-8")) if args.layers else []
+            source = Path(source_arg).expanduser()
+            project = store.create(args.name or source.stem, source.read_bytes(),
+                                   source_name=source.name, layers=layers)
+            print(f"\n  project  {project.id}  ·  {project.name}\n"
+                  f"  source   {project.width}x{project.height}\n")
+            return 0
+        if args.action == "update":
+            payload: dict[str, Any] = {}
+            if args.name:
+                payload["name"] = args.name
+            if args.layers:
+                payload["layers"] = json.loads(Path(args.layers).read_text(encoding="utf-8"))
+            project = store.update(args.id, payload)
+            print(f"\n  updated  {project.id}  ·  {len(project.layers)} layers\n")
+            return 0
+        if args.action == "delete":
+            if not args.yes:
+                return _fail("refusing to delete a project without --yes")
+            store.delete(args.id)
+            print(f"\n  deleted  {args.id}\n")
+            return 0
+        if args.action == "show":
+            project, _source = store.load(args.id)
+            print(json.dumps(project.to_dict(), indent=2))
+            return 0
+        if args.action == "render":
+            manager = JobManager(cfg, workers=1)
+            try:
+                job = store.submit(manager, args.id)
+                _wait_job(job, show_stages=not args.json)
+                if args.json:
+                    print(json.dumps(job.to_dict(), indent=2))
+                else:
+                    _print_job_result(job)
+                return 0 if job.state == "done" else 1
+            finally:
+                manager.shutdown()
+    except (PbrForgeError, OSError, ValueError) as exc:
+        return _fail(str(exc))
+    return 2
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    from .core.errors import PbrForgeError
+    from .jobs import JobManager
+    from .watch import watch
+    cfg = _cfg(args)
+    cfg.ensure_dirs()
+    manager = JobManager(cfg, workers=1)
+    def on_job(path: Path, job: Any) -> None:
+        print(f"  new      {path.name} → {job.id}", flush=True)
+        _wait_job(job, show_stages=bool(args.verbose))
+        if job.state == "done":
+            print(f"  done     {job.seconds:.1f}s  {job.folder}", flush=True)
+        else:
+            print(f"  FAILED   {(job.error or '').splitlines()[0]}", flush=True)
+    def on_error(path: Path, detail: str) -> None:
+        print(f"  skipped  {path.name}  {detail.splitlines()[0]}", flush=True)
+    try:
+        print(f"\n  watching {Path(args.folder).expanduser()}  "
+              f"({args.interval:g}s, {'once' if args.once else 'Ctrl-C to stop'})\n",
+              flush=True)
+        results = watch(Path(args.folder).expanduser(), manager,
+                        interval=args.interval, once=args.once,
+                        recursive=args.recursive, name_prefix=args.name_prefix,
+                        options={
+                            "preset": args.preset, "category": args.category,
+                            "resolution": args.resolution, "metal": args.metal,
+                            "seamless": not args.no_seamless,
+                            "delight": not args.no_delight,
+                            "auto_levels": args.auto_levels,
+                            "white_balance": args.white_balance,
+                            "square": args.square, "height_polarity": args.height,
+                        }, on_job=on_job, on_error=on_error)
+        if args.json:
+            print(json.dumps([{"file": str(item.path), "job": item.job.to_dict()}
+                              for item in results], indent=2))
+        return 0
+    except PbrForgeError as exc:
+        return _fail(str(exc))
+    finally:
+        manager.shutdown()
+
+
+def cmd_plugin(args: argparse.Namespace) -> int:
+    from . import plugins
+    from .core.errors import PbrForgeError
+    cfg = _cfg(args)
+    roots = [Path(p).expanduser() for p in (args.dir or [])]
+    roots += [Path(cfg.config_dir) / "plugins", Path.cwd() / "plugins"]
+    found = plugins.discover(roots)
+    if args.action == "list":
+        if args.json:
+            print(json.dumps([p.to_dict() for p in found], indent=2))
+        elif not found:
+            print(f"\n  no plugins found in: {', '.join(str(p) for p in roots)}\n")
+        else:
+            print(f"\n  {'name':<26} {'version':<10} description")
+            for plugin in found:
+                print(f"  {plugin.name:<26} {plugin.version:<10} {plugin.description}")
+            print()
+        return 0
+    if args.action == "run":
+        if not args.name or not args.material:
+            return _fail("plugin run needs a plugin name and a material folder:\n"
+                         "  pbrforge plugin run texel-report .\\library\\material --out report")
+        plugin = next((p for p in found if p.name == args.name), None)
+        if plugin is None:
+            return _fail(f"no plugin named {args.name!r}; try 'pbrforge plugin list'")
+        out = (Path(args.out).expanduser() if args.out else
+               Path(args.material).expanduser() / f"plugin-{plugin.name}")
+        print(f"\n  running local plugin {plugin.name} {plugin.version}")
+        print(f"  this executes {plugin.entry}\n")
+        try:
+            payload = plugins.run(plugin, Path(args.material).expanduser(), out)
+        except PbrForgeError as exc:
+            return _fail(str(exc))
+        print(json.dumps(payload, indent=2) if args.json else
+              f"  output  {payload['output']}\n  files   {', '.join(payload['files']) or '(none)'}\n")
+        return 0
+    return 2
 
 
 def cmd_update(args: argparse.Namespace) -> int:
@@ -723,7 +1148,8 @@ def cmd_version(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------- parser
 COMMANDS = ("serve", "make", "batch", "library", "stop", "doctor", "selftest",
             "url", "code", "discover", "tls", "cache", "config", "update",
-            "version", "help")
+            "version", "help", "vault", "release", "security", "capture",
+            "surface", "setdoctor", "deliver", "project", "watch", "plugin")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -808,6 +1234,116 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("library", help="list finished materials")
     p.add_argument("--open", nargs="?", const="", metavar="SLUG",
                    help="open the library, or one material folder")
+    p.add_argument("--query", default="", metavar="TEXT",
+                   help="case-insensitive name/slug/tag search")
+    p.add_argument("--tag", default="", metavar="TAG", help="filter by one tag")
+    p.add_argument("--favorite", action="store_true", help="only starred materials")
+    p.add_argument("--category", default="", metavar="NAME", help="filter by category")
+    add_common(p)
+
+    p = sub.add_parser("vault", help="encrypted local backup and restore")
+    p.add_argument("action", nargs="?", default="backup",
+                   choices=["backup", "restore", "verify", "inspect"],
+                   help="backup (default), restore, verify, or inspect")
+    p.add_argument("vault", nargs="?", metavar="VAULT.pbrvault",
+                   help="vault path for restore/verify/inspect")
+    p.add_argument("--output", metavar="PATH",
+                   help="backup file, or restore destination folder")
+    p.add_argument("--overwrite", action="store_true",
+                   help="restore into a non-empty folder (only after inspecting it)")
+    add_common(p)
+
+    p = sub.add_parser("release", help="sign or verify release artifacts")
+    p.add_argument("action", choices=["keygen", "sign", "verify"],
+                   help="create an Ed25519 key, sign a file, or verify one")
+    p.add_argument("file", nargs="?", metavar="FILE")
+    p.add_argument("--private", default="release-private.pem", metavar="PATH")
+    p.add_argument("--public", default="release-public.pem", metavar="PATH")
+    p.add_argument("--key", metavar="PATH", help="private key used by 'sign'")
+    p.add_argument("--signature", metavar="PATH", help="signature JSON for 'verify'")
+    p.add_argument("--output", metavar="PATH", help="signature JSON output")
+    add_common(p)
+
+    p = sub.add_parser("security", help="audit the local security posture")
+    add_common(p)
+
+    p = sub.add_parser("capture", help="merge a bracketed photo stack into one source")
+    p.add_argument("frames", nargs="+", metavar="FRAME.png")
+    p.add_argument("--out", metavar="PATH", help="merged PNG output")
+    p.add_argument("--mode", default="median", choices=["median", "mean", "min", "max"])
+    p.add_argument("--no-normalize", action="store_true",
+                   help="do not equalise exposure before merging")
+    p.add_argument("--forge", action="store_true",
+                   help="send the merged image through the normal PBR pipeline")
+    add_job_options(p)
+    add_common(p)
+
+    p = sub.add_parser("surface", help="generate a tileable procedural material")
+    p.add_argument("--list", action="store_true", help="list patterns and weathering")
+    p.add_argument("--pattern", default="brick",
+                   choices=["brick", "tile", "plank", "panel", "stone", "noise"])
+    p.add_argument("--size", type=int, default=512, metavar="PX")
+    p.add_argument("--seed", type=int, default=1234)
+    p.add_argument("--weathering", default="dust",
+                   choices=["none", "dust", "grime", "moss", "wear"])
+    p.add_argument("--weather-amount", type=float, default=0.35, metavar="0..1")
+    p.add_argument("--variant", type=int, default=0)
+    p.add_argument("--rows", type=int, default=6)
+    p.add_argument("--cols", type=int, default=12)
+    p.add_argument("--mortar", type=float, default=0.055, metavar="FRACTION")
+    p.add_argument("--hue", default="warm", choices=["warm", "cool", "neutral"])
+    p.add_argument("--out", metavar="DIR", help="write the generated maps here")
+    p.add_argument("--forge", action="store_true",
+                   help="send the albedo through the normal PBR pipeline")
+    add_job_options(p)
+    add_common(p)
+
+    p = sub.add_parser("setdoctor", help="scan or repair a PBR texture set")
+    p.add_argument("folder", metavar="DIR")
+    p.add_argument("--out", metavar="DIR", help="new output folder for repairs")
+    p.add_argument("--normal", choices=["opengl", "directx"],
+                   help="flip the normal map's green channel to this convention")
+    p.add_argument("--invert", choices=["roughness", "glossiness", "metalness"],
+                   help="invert a data map role")
+    p.add_argument("--repack", choices=["orm", "mra"],
+                   help="pack metallic/roughness/AO (or MRA) into one image")
+    p.add_argument("--rename", action="store_true", help="write canonical map names")
+    p.add_argument("--overwrite", action="store_true", help="allow an existing output")
+    add_common(p)
+
+    p = sub.add_parser("deliver", help="write MaterialX/glTF/USD/DCC delivery files")
+    p.add_argument("material", metavar="MATERIAL_DIR")
+    p.add_argument("--out", metavar="DIR", help="output folder (default: <material>/delivery)")
+    p.add_argument("--name", metavar="TEXT", help="material name")
+    add_common(p)
+
+    p = sub.add_parser("project", help="create and render editable material projects")
+    p.add_argument("action", choices=["list", "create", "show", "update", "render", "delete"])
+    p.add_argument("id", nargs="?", metavar="ID")
+    p.add_argument("source", nargs="?", metavar="SOURCE.png", help="source photo for create")
+    p.add_argument("--name", metavar="TEXT")
+    p.add_argument("--layers", metavar="JSON_FILE",
+                   help="layer stack JSON for create/update")
+    p.add_argument("--yes", action="store_true", help="confirm a destructive delete")
+    add_common(p)
+
+    p = sub.add_parser("watch", help="forge new PNG files dropped into a folder")
+    p.add_argument("folder", metavar="DIR")
+    p.add_argument("--interval", type=float, default=5.0, metavar="SEC")
+    p.add_argument("--once", action="store_true", help="scan once, then exit")
+    p.add_argument("--recursive", action="store_true", help="include subfolders")
+    p.add_argument("--name-prefix", default="", metavar="TEXT")
+    p.add_argument("-v", "--verbose", action="store_true", help="show every stage")
+    add_job_options(p)
+    add_common(p)
+
+    p = sub.add_parser("plugin", help="list or run a local plugin")
+    p.add_argument("action", choices=["list", "run"])
+    p.add_argument("name", nargs="?", metavar="NAME")
+    p.add_argument("material", nargs="?", metavar="MATERIAL_DIR")
+    p.add_argument("--dir", action="append", metavar="DIR",
+                   help="extra plugin root (repeatable)")
+    p.add_argument("--out", metavar="DIR", help="plugin output folder")
     add_common(p)
 
     p = sub.add_parser("update", help="check GitHub for a newer release")
@@ -911,6 +1447,10 @@ def main(argv: list[str] | None = None) -> int:
         "selftest": cmd_selftest, "url": cmd_url, "code": cmd_code,
         "discover": cmd_discover, "tls": cmd_tls, "cache": cmd_cache,
         "config": cmd_config, "update": cmd_update, "version": cmd_version,
+        "vault": cmd_vault, "release": cmd_release, "security": cmd_security,
+        "capture": cmd_capture, "surface": cmd_surface,
+        "setdoctor": cmd_setdoctor, "deliver": cmd_deliver,
+        "project": cmd_project, "watch": cmd_watch, "plugin": cmd_plugin,
     }
     handler = handlers.get(command)
     if handler is None:

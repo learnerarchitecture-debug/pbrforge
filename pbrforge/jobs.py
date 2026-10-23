@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from . import library as library_meta
 from .config import Config
 from .core.errors import LimitError, PbrForgeError
 from .core.params import Params
@@ -591,7 +592,9 @@ class JobManager:
         return self.library_map(slug, kind)
 
     # -------------------------------------------------------------- library
-    def list_library(self) -> list[dict[str, Any]]:
+    def list_library(self, *, query: str = "", tag: str = "",
+                     favorite: bool | None = None,
+                     category: str = "") -> list[dict[str, Any]]:
         out = []
         if not self.library.is_dir():
             return out
@@ -613,17 +616,26 @@ class JobManager:
                 if path.is_file():
                     previews.append({"kind": kind,
                                      "url": f"/api/library/{child.name}/map/{kind}"})
-            out.append({
+            # material.json records what was actually written, which can be
+            # smaller than the requested job resolution when the source was
+            # smaller.  The library and texel-density maths must use the real
+            # pixels, not the request.
+            written = (record or {}).get("resolutions") or []
+            item = {
                 "slug": child.name,
                 "name": (job or {}).get("name") or str((record or {}).get("material") or child.name),
                 "created": (job or {}).get("created"),
                 "preset": (job or {}).get("preset") or (record or {}).get("preset"),
-                "resolution": (job or {}).get("resolution"),
+                "category": (job or {}).get("category") or (record or {}).get("category"),
+                "resolution": written[-1] if written else (job or {}).get("resolution"),
                 "verdict": verdict,
                 "maps": previews,
                 "folder": str(child),
-            })
-        return out
+            }
+            item = library_meta.merge(item, child)
+            out.append(item)
+        return library_meta.filter_items(out, query=query, tag=tag,
+                                         favorite=favorite, category=category)
 
     def library_map(self, slug: str, kind: str) -> Path | None:
         if not re.fullmatch(r"[a-z0-9_-]{1,80}", slug or ""):

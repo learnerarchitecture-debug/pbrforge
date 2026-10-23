@@ -323,7 +323,7 @@ a second PC will not have run `pip`.
    works on one machine and not another, this is the first question.
 
 An honest skip beats a false failure: with neither backend available, `test_tls` returns *pass* with
-the reason, because failing would make a correct stdlib-only build look broken.
+the reason, because failing would make a correct minimal build look broken.
 
 ---
 

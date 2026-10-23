@@ -1,5 +1,8 @@
 """The local server. Standard library only, by design.
 
+The v2 security and studio modules it calls may import `cryptography` lazily for
+vault/signature work; the HTTP server itself remains stdlib.
+
 Why not FastAPI/uvicorn, despite docs/ARCHITECTURE.md originally specifying them:
 
   * The installable build has to run on a second PC where nothing is pip-installed.
@@ -26,17 +29,23 @@ What this module deliberately implements, because the LAN story depends on it:
 from __future__ import annotations
 
 import gzip
+import ipaddress
 import json
 import mimetypes
 import os
 import re
+import shutil
 import socket
 import ssl
 import sys
+import tempfile
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email import policy as email_policy
+from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,6 +64,44 @@ from .discover import Beacon
 STARTED_AT = time.time()
 
 
+# ------------------------------------------------------------------- rate limit
+class RateLimiter:
+    """Small per-client token bucket for authenticated API traffic.
+
+    This is not a promise to absorb a flood; a LAN peer can always saturate a
+    link.  It is here so a broken browser loop or a curious guest cannot fill the
+    staging directory or make the single pipeline worker useless for everyone
+    else.  The server stays single-worker by design, so the write bucket is much
+    tighter than the read bucket.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[str, float] = {}
+        self._events: dict[str, deque[float]] = {}
+
+    def allow(self, key: str, *, kind: str = "read") -> bool:
+        now = time.monotonic()
+        limit, window = (120, 60.0) if kind == "read" else (18, 60.0)
+        with self._lock:
+            bucket = self._events.setdefault(key + ":" + kind, deque())
+            while bucket and now - bucket[0] > window:
+                bucket.popleft()
+            if len(bucket) >= limit:
+                return False
+            bucket.append(now)
+            self._seen[key] = now
+            # Keep the map bounded even if a scanner rotates source ports.  The
+            # check is cheap and happens only after a bucket has been touched.
+            if len(self._seen) > 4096:
+                cutoff = now - 3600
+                for old in [k for k, stamp in self._seen.items() if stamp < cutoff]:
+                    self._seen.pop(old, None)
+                    self._events.pop(old + ":read", None)
+                    self._events.pop(old + ":write", None)
+            return True
+
+
 # --------------------------------------------------------------------- payload
 @dataclass
 class App:
@@ -67,6 +114,7 @@ class App:
     jobs: Any = None
     update_info: Any = None
     update_checked: float = 0.0
+    limiter: RateLimiter = field(default_factory=RateLimiter, repr=False)
     _update_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _update_thread: threading.Thread | None = field(default=None, repr=False)
 
@@ -94,7 +142,12 @@ class App:
             "port": cfg.serve_port,
             "auth": cfg.auth,
             "library": str(cfg.library),
-            "features": ["upload", "pbr", "library", "updates"],
+            "features": ["upload", "pbr", "library", "library-metadata",
+                         "updates", "projects", "capture", "surface", "setdoctor",
+                         "delivery", "encrypted-vault", "security-audit",
+                         "watch-cli", "plugins-cli"],
+            "vault": True,
+            "signature_required": True,
         }
 
     def update_payload(self, *, force: bool = False) -> dict[str, Any]:
@@ -267,6 +320,15 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return self.app.auth.verify_session(self._cookies().get(COOKIE_NAME))
 
+    def _session(self) -> str:
+        return self._cookies().get(COOKIE_NAME, "")
+
+    def _csrf_ok(self) -> bool:
+        if not self.app.config.auth:
+            return True
+        return self.app.auth.verify_csrf(self._session(),
+                                         self.headers.get("X-CSRF-Token"))
+
     def _read_body(self) -> bytes:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -278,12 +340,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     def _security_headers(self) -> list[tuple[str, str]]:
-        return [
+        headers = [
             ("X-Content-Type-Options", "nosniff"),
             ("Referrer-Policy", "no-referrer"),
-            ("X-Frame-Options", "SAMEORIGIN"),
+            ("X-Frame-Options", "DENY"),
             ("Cross-Origin-Opener-Policy", "same-origin"),
-            ("Permissions-Policy", "geolocation=(), camera=(), microphone=()"),
+            ("Cross-Origin-Resource-Policy", "same-origin"),
+            ("X-Permitted-Cross-Domain-Policies", "none"),
+            ("Permissions-Policy", "geolocation=(), camera=(), microphone=(), usb=()"),
             # The UI is one self-contained file with inline style and script, so
             # 'unsafe-inline' is required. Everything is served from this origin
             # and nothing is loaded from the network, which is the trade-off being
@@ -291,8 +355,70 @@ class Handler(BaseHTTPRequestHandler):
             ("Content-Security-Policy",
              "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
              "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' blob:; "
-             "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'"),
+             "connect-src 'self'; form-action 'self'; object-src 'none'; "
+             "base-uri 'none'; frame-ancestors 'none'"),
         ]
+        if self.app.config.tls:
+            # Only send HSTS over TLS. Sending it on plain HTTP is ignored by
+            # browsers, and worse, it hides that the transport is still insecure.
+            headers.append(("Strict-Transport-Security",
+                            "max-age=31536000; includeSubDomains"))
+        return headers
+
+    def _host_ok(self) -> tuple[bool, str]:
+        """Reject Host headers that do not name this machine.
+
+        DNS rebinding works by making attacker.example resolve to 192.168.x.x
+        after the browser has accepted the origin.  An allow-list of local names
+        and private IP literals stops that without needing a certificate per PC.
+        A custom hostname can be added to the OS hosts file or reached by IP.
+        """
+        raw = (self.headers.get("Host") or "").strip()
+        if not raw:
+            return False, "the request has no Host header"
+        try:
+            parsed = urlparse("//" + raw)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return False, "the Host header is malformed"
+        if not host:
+            return False, "the Host header has no hostname"
+        local = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+        machine = ""
+        try:
+            machine = (local_hostname() or "").lower()
+            local.add(machine)
+            local.add((primary_ip() or "").lower())
+        except Exception:       # noqa: BLE001 - host detection is best effort
+            pass
+        if ((machine and host == machine) or host.endswith(".local")
+                or host.endswith(".localhost") or host in local):
+            if not self._host_port_ok(port):
+                return False, "the Host port does not match this server"
+            return True, ""
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False, (
+                f"Host {host!r} is not a local name. Use localhost, the machine's "
+                f"hostname, a *.local name, or a private IP address.")
+        if address.is_loopback or address.is_private or address.is_link_local:
+            if not self._host_port_ok(port):
+                return False, "the Host port does not match this server"
+            return True, ""
+        return False, "public IP addresses are not accepted as a Host header"
+
+    def _host_port_ok(self, port: int | None) -> bool:
+        """An explicit Host port must be one this server actually listens on."""
+        if port is None:
+            return True
+        server = self.server.server_address
+        allowed = {server[1] if len(server) > 1 else None,
+                   self.app.config.port, self.app.config.https_port}
+        allowed.discard(None)
+        allowed.discard(0)
+        return port in allowed
 
     def _send(self, status: int, body: bytes, content_type: str,
               extra: list[tuple[str, str]] | None = None, *, cache: str = "no-store",
@@ -358,12 +484,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:           # noqa: N802
         self._route("POST")
 
+    def do_PATCH(self) -> None:          # noqa: N802
+        self._route("PATCH")
+
+    def do_DELETE(self) -> None:         # noqa: N802
+        self._route("DELETE")
+
     def _route(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         head_only = method == "HEAD"
 
         try:
+            host_ok, host_detail = self._host_ok()
+            if not host_ok:
+                self._send_json(400, {"error": host_detail})
+                return
+
             # ---- unauthenticated -------------------------------------------
             if path == "/api/ping":
                 self._send_json(200, self.app.ping_payload(), cache="no-store")
@@ -395,12 +532,67 @@ class Handler(BaseHTTPRequestHandler):
                                extra=[("Location", f"/pair?next={quote(path)}")])
                 return
 
+            if method in ("POST", "PATCH", "PUT", "DELETE"):
+                if not self._same_origin():
+                    self._send_json(403, {"error": "cross-origin write refused"})
+                    return
+                if not self._csrf_ok():
+                    self._send_json(403, {"error": "missing or invalid CSRF token",
+                                          "session": "/api/session"})
+                    return
+                if not self.app.limiter.allow(self._client(), kind="write"):
+                    self._send_json(429, {
+                        "error": "too many write requests; wait a minute and retry",
+                    })
+                    return
+            elif path.startswith("/api/"):
+                if not self.app.limiter.allow(self._client(), kind="read"):
+                    self._send_json(429, {
+                        "error": "too many API requests; wait a minute and retry",
+                    })
+                    return
+
+            if path == "/api/session":
+                self._send_json(200, {
+                    "app": APP_NAME, "version": __version__,
+                    "authenticated": True, "auth": bool(self.app.config.auth),
+                    "tls": bool(self.app.config.tls),
+                    "csrf": (self.app.auth.csrf_token(self._session())
+                             if self.app.config.auth else ""),
+                })
+                return
+
             if path == "/api/health":
                 self._send_json(200, self.app.health_payload())
                 return
 
             if path == "/api/presets":
                 self._send_json(200, self._presets_payload())
+                return
+
+            if path == "/api/security":
+                from .. import security
+                self._send_json(200, security.audit(self.app.config))
+                return
+
+            if path == "/api/projects":
+                self._handle_projects(method)
+                return
+
+            if path.startswith("/api/projects/"):
+                self._handle_project(path, method)
+                return
+
+            if path == "/api/capture" and method == "POST":
+                self._handle_capture(parsed.query)
+                return
+
+            if path == "/api/surface":
+                self._handle_surface(method, parsed.query)
+                return
+
+            if path == "/api/vault" and method == "POST":
+                self._handle_vault()
                 return
 
             if path == "/api/jobs":
@@ -416,11 +608,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/library":
-                self._send_json(200, {"materials": self.app.jobs.list_library()})
+                query = self._query_one(parsed.query, "q", "").strip()
+                tag = self._query_one(parsed.query, "tag", "").strip()
+                category = self._query_one(parsed.query, "category", "").strip()
+                favorite_raw = self._query_one(parsed.query, "favorite", "").lower()
+                favorite = (True if favorite_raw in ("1", "true", "yes", "on")
+                            else False if favorite_raw in ("0", "false", "no", "off")
+                            else None)
+                items = self.app.jobs.list_library(query=query, tag=tag,
+                                                   favorite=favorite,
+                                                   category=category)
+                self._send_json(200, {"materials": items,
+                                      "tags": self._library_tags(items),
+                                      "query": query})
                 return
 
             if path.startswith("/api/library/"):
-                self._handle_library(path)
+                self._handle_library(path, method)
                 return
 
             if path == "/api/update":
@@ -437,9 +641,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/logout":
+                cookie = auth_mod.session_cookie("", secure=bool(self.app.config.tls),
+                                                 max_age=0)
                 self._send(200, b"unpaired\n", "text/plain",
-                           extra=[("Set-Cookie",
-                                   f"{COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")])
+                           extra=[("Set-Cookie", cookie)])
                 return
 
             if path in ("/", "/index.html"):
@@ -473,13 +678,23 @@ class Handler(BaseHTTPRequestHandler):
         return raw not in ("0", "false", "no", "off", "")
 
     def _same_origin(self) -> bool:
-        """Reject a cross-site form post. SameSite=Lax already blocks most of it."""
+        """Reject a cross-site form post. SameSite=Strict already blocks most of it."""
         origin = self.headers.get("Origin")
         host = self.headers.get("Host")
         if not origin or not host:
             return True
+        # Some privacy-hardened Chromium shells and proxied form posts report
+        # `Origin: null` even for a same-origin navigation.  Browsers that do
+        # this still send Sec-Fetch-Site, which an attacker cannot forge, so use
+        # it as the fallback rather than breaking pairing for those clients.
+        if origin.strip().lower() == "null":
+            site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            return site != "cross-site"
         try:
-            return urlparse(origin).netloc.lower() == host.lower()
+            parsed = urlparse(origin)
+            scheme = "https" if self.app.config.tls else "http"
+            return (parsed.scheme == scheme
+                    and parsed.netloc.lower() == host.lower())
         except ValueError:
             return False
 
@@ -499,6 +714,289 @@ class Handler(BaseHTTPRequestHandler):
                 "default": bool(preset.default),
             })
         return {"presets": items, "default": preset_mod.default_preset()}
+
+    # --------------------------------------------------------- studio helpers
+    def _read_body_limit(self, limit: int) -> tuple[bytes, str]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return b"", "Content-Length is not an integer"
+        if length <= 0:
+            return b"", "the request has no body"
+        if length > limit:
+            return b"", f"the request is {length / 1e6:.1f} MB, above the {limit / 1e6:.1f} MB limit"
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return b"", "the request ended early"
+        return body, ""
+
+    def _json_body(self, limit: int = 2 * 1024 * 1024) -> tuple[dict[str, Any], str]:
+        body, error = self._read_body_limit(limit)
+        if error:
+            return {}, error
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            return {}, "the body must be a JSON object"
+        if not isinstance(payload, dict):
+            return {}, "the body must be a JSON object"
+        return payload, ""
+
+    def _project_store(self) -> Any:
+        from ..project import ProjectStore
+        return ProjectStore(Path(self.app.config.config_dir) / "projects")
+
+    def _handle_projects(self, method: str) -> None:
+        from ..core.errors import PbrForgeError
+        store = self._project_store()
+        if method == "GET":
+            projects = []
+            for item in store.list():
+                projects.append({
+                    "id": item.get("id"), "name": item.get("name"),
+                    "created": item.get("created"), "updated": item.get("updated"),
+                    "width": item.get("width"), "height": item.get("height"),
+                    "layers": len(item.get("layers") or []),
+                    "last_job": item.get("last_job") or "",
+                })
+            self._send_json(200, {"projects": projects})
+            return
+        if method != "POST":
+            self._send_json(405, {"error": "use GET or POST for /api/projects"})
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if ctype not in ("image/png", "application/octet-stream"):
+            self._send_json(415, {"error": "a project source must be a PNG body"})
+            return
+        body, error = self._read_body_limit(int(self.app.config.max_upload_mb) * 1024 * 1024)
+        if error:
+            self._send_json(413 if "above" in error else 400, {"error": error})
+            return
+        name = self._query_one(urlparse(self.path).query, "name", "Untitled project")[:80]
+        source_name = self._query_one(urlparse(self.path).query, "filename", "source.png")[:160]
+        try:
+            project = store.create(name, body, source_name=source_name)
+        except PbrForgeError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(201, {"project": project.to_dict(),
+                             "source": f"/api/projects/{project.id}/source"})
+
+    def _handle_project(self, path: str, method: str) -> None:
+        from ..core.errors import PbrForgeError
+        parts = [part for part in path.strip("/").split("/") if part]
+        # api / projects / <id> / [action]
+        if len(parts) < 3:
+            self._send_json(404, {"error": "no project id in the path"})
+            return
+        project_id = parts[2]
+        store = self._project_store()
+        if len(parts) == 3:
+            if method == "GET":
+                try:
+                    project, _source = store.load(project_id)
+                except PbrForgeError as exc:
+                    self._send_json(404, {"error": str(exc)})
+                    return
+                self._send_json(200, {"project": project.to_dict(),
+                                     "source": f"/api/projects/{project_id}/source"})
+                return
+            if method == "PATCH":
+                payload, error = self._json_body()
+                if error:
+                    self._send_json(400, {"error": error})
+                    return
+                try:
+                    project = store.update(project_id, payload)
+                except PbrForgeError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                self._send_json(200, {"project": project.to_dict()})
+                return
+            if method == "DELETE":
+                try:
+                    store.delete(project_id)
+                except PbrForgeError as exc:
+                    self._send_json(404, {"error": str(exc)})
+                    return
+                self._send_json(200, {"deleted": project_id})
+                return
+            self._send_json(405, {"error": f"method {method} is not supported"})
+            return
+        action = parts[3]
+        if action == "source" and method == "GET":
+            try:
+                _project, source = store.load(project_id)
+            except PbrForgeError as exc:
+                self._send_json(404, {"error": str(exc)})
+                return
+            self._send_file(source)
+            return
+        if action == "render" and method == "POST":
+            try:
+                job = store.submit(self.app.jobs, project_id)
+            except PbrForgeError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(202, {"job": job.to_dict()})
+            return
+        self._send_json(404, {"error": f"unknown project action {action!r}"})
+
+    def _surface_spec_from(self, values: dict[str, Any]) -> Any:
+        from ..surface import SurfaceSpec
+        def number(key: str, default: Any) -> Any:
+            raw = values.get(key, default)
+            if isinstance(raw, list):
+                raw = raw[0] if raw else default
+            return raw
+        return SurfaceSpec(
+            pattern=str(number("pattern", "brick")),
+            size=int(number("size", 512)),
+            seed=int(number("seed", 1234)),
+            weathering=str(number("weathering", "dust")),
+            weather_amount=float(number("weather_amount", 0.35)),
+            variant=int(number("variant", 0)),
+            rows=int(number("rows", 6)), cols=int(number("cols", 12)),
+            mortar=float(number("mortar", 0.055)),
+            hue=str(number("hue", "warm")),
+        )
+
+    def _handle_surface(self, method: str, query: str) -> None:
+        from ..core.errors import PbrForgeError
+        from ..surface import generate
+        if method not in ("GET", "POST"):
+            self._send_json(405, {"error": "use GET for preview or POST to forge"})
+            return
+        values = {key: vals[0] for key, vals in parse_qs(query or "").items()}
+        if method == "POST":
+            payload, error = self._json_body(256 * 1024)
+            if error:
+                self._send_json(400, {"error": error})
+                return
+            values.update(payload)
+        try:
+            spec = self._surface_spec_from(values)
+            result = generate(spec)
+        except (PbrForgeError, ValueError, TypeError) as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        if method == "GET":
+            with tempfile.TemporaryDirectory(prefix="pbrforge-surface-") as tmp:
+                path = Path(tmp) / "albedo.png"
+                from ..core import png
+                png.write(path, result.albedo)
+                self._send_file(path)
+            return
+        with tempfile.TemporaryDirectory(prefix="pbrforge-surface-") as tmp:
+            path = Path(tmp) / "surface.png"
+            from ..core import png
+            png.write(path, result.albedo)
+            try:
+                job = self.app.jobs.submit_bytes(
+                    path.read_bytes(), name=str(values.get("name") or
+                                                f"Surface {spec.pattern}")[:80],
+                    preset=str(values.get("preset") or "generic-pbr"),
+                    category=str(values.get("category") or "unknown"),
+                    resolution=int(values.get("resolution") or 1024),
+                    metal=str(values.get("metal") or "auto"),
+                    source_name=f"surface-{spec.pattern}.png")
+            except PbrForgeError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+        self._send_json(202, {"job": job.to_dict(), "surface": result.to_dict()})
+
+    def _handle_capture(self, query: str) -> None:
+        from .. import capture as capture_mod
+        from ..core.errors import PbrForgeError
+        ctype = self.headers.get("Content-Type") or ""
+        if "multipart/form-data" not in ctype.lower():
+            self._send_json(415, {"error": "capture stack expects multipart/form-data"})
+            return
+        # Twelve frames is the product limit; the absolute cap keeps a forged
+        # Content-Length from asking the request thread to allocate a gigabyte.
+        limit = min(256 * 1024 * 1024,
+                    int(self.app.config.max_upload_mb) * 1024 * 1024 * 12)
+        body, error = self._read_body_limit(limit)
+        if error:
+            self._send_json(413 if "above" in error else 400, {"error": error})
+            return
+        raw = (f"Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n").encode("utf-8") + body
+        try:
+            message = BytesParser(policy=email_policy.default).parsebytes(raw)
+        except Exception as exc:      # noqa: BLE001
+            self._send_json(400, {"error": f"could not parse the capture upload: {exc}"})
+            return
+        if not message.is_multipart():
+            self._send_json(400, {"error": "the capture upload has no multipart parts"})
+            return
+        fields: dict[str, str] = {}
+        frames: list[bytes] = []
+        for part in message.iter_parts():
+            filename = part.get_filename()
+            if filename:
+                payload = part.get_payload(decode=True) or b""
+                if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+                    self._send_json(400, {"error": f"{filename} is not a PNG"})
+                    return
+                frames.append(payload)
+            else:
+                name = (part.get_param("name", header="content-disposition") or "").lower()
+                payload = part.get_payload(decode=True) or b""
+                if name:
+                    fields[name] = payload.decode("utf-8", "replace")[:200]
+        if len(frames) < 2:
+            self._send_json(400, {"error": "a capture stack needs at least two frames"})
+            return
+        if len(frames) > 12:
+            self._send_json(400, {"error": "a capture stack is limited to 12 frames"})
+            return
+        mode = (fields.get("mode") or "median").lower()
+        normalize = (fields.get("normalize") or "1").lower() not in ("0", "false", "no")
+        try:
+            with tempfile.TemporaryDirectory(prefix="pbrforge-capture-") as tmp:
+                source_paths = []
+                for index, payload in enumerate(frames, start=1):
+                    path = Path(tmp) / f"frame-{index}.png"
+                    path.write_bytes(payload)
+                    source_paths.append(path)
+                merged = Path(tmp) / "merged.png"
+                result = capture_mod.merge(source_paths, merged, mode=mode,
+                                           normalize=normalize)
+                job = self.app.jobs.submit_bytes(
+                    merged.read_bytes(),
+                    name=(fields.get("name") or "Capture stack")[:80],
+                    preset=(fields.get("preset") or "generic-pbr"),
+                    category=(fields.get("category") or "unknown"),
+                    resolution=int(fields.get("resolution") or 1024),
+                    metal=(fields.get("metal") or "auto"),
+                    source_name="capture-merged.png")
+        except (PbrForgeError, ValueError) as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(202, {"job": job.to_dict(), "capture": result.to_dict()})
+
+    def _handle_vault(self) -> None:
+        from .. import security
+        from ..core.errors import PbrForgeError
+        payload, error = self._json_body(64 * 1024)
+        if error:
+            self._send_json(400, {"error": error})
+            return
+        passphrase = str(payload.get("passphrase") or "")
+        try:
+            security.validate_passphrase(passphrase)
+            backups = Path(self.app.config.config_dir) / "backups"
+            backups.mkdir(parents=True, exist_ok=True)
+            target = backups / security.default_backup_name()
+            info = security.create_backup(
+                Path(self.app.config.config_dir), Path(self.app.config.library),
+                target, passphrase)
+        except PbrForgeError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_file(target, download=True)
+        # Keep the encrypted file: it is the user's backup, not a cache entry.
+        print(f"  backup   wrote {target} ({info['bytes']:,} bytes)", flush=True)
 
     def _handle_upload(self, query: str) -> None:
         from ..core.errors import PbrForgeError
@@ -596,10 +1094,17 @@ class Handler(BaseHTTPRequestHandler):
         if action == "download":
             zpath = (self.app.jobs.zip_file(job) if job is not None
                      else (Path(record.get("zip_path")) if record.get("zip_path") else None))
-            if zpath is None or not Path(zpath).is_file():
+            if zpath is not None:
+                try:
+                    zpath = Path(zpath).resolve()
+                    zpath = (zpath if zpath.is_relative_to(self.app.jobs.library.resolve())
+                             else None)
+                except OSError:
+                    zpath = None
+            if zpath is None or not zpath.is_file():
                 self._send_json(404, {"error": "the result zip is not available yet"})
                 return
-            self._send_file(Path(zpath), download=True, head_only=(method == "HEAD"))
+            self._send_file(zpath, download=True, head_only=(method == "HEAD"))
             return
 
         if action == "map" and len(parts) >= 5:
@@ -608,8 +1113,14 @@ class Handler(BaseHTTPRequestHandler):
                 mpath = self.app.jobs.map_file(job, kind)
             else:
                 folder = Path(record.get("folder") or "")
-                mpath = folder / "previews" / f"{kind}.png"
-                mpath = mpath if mpath.is_file() else None
+                try:
+                    folder = folder.resolve()
+                    folder = (folder if folder.is_relative_to(self.app.jobs.library.resolve())
+                              else None)
+                except OSError:
+                    folder = None
+                mpath = folder / "previews" / f"{kind}.png" if folder else None
+                mpath = mpath if mpath and mpath.is_file() else None
             if mpath is None:
                 self._send_json(404, {"error": f"no preview for {kind}"})
                 return
@@ -628,7 +1139,18 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return payload if isinstance(payload, dict) else None
 
-    def _handle_library(self, path: str) -> None:
+    @staticmethod
+    def _library_tags(items: list[dict[str, Any]]) -> list[str]:
+        tags: set[str] = set()
+        for item in items:
+            tags.update(str(tag) for tag in item.get("tags") or [])
+        return sorted(tags)
+
+    def _handle_library(self, path: str, method: str = "GET") -> None:
+        from .. import delivery as delivery_mod
+        from .. import library as library_mod
+        from .. import setdoctor
+        from ..core.errors import PbrForgeError
         parts = [part for part in path.strip("/").split("/") if part]
         # api / library / <slug> / map / <kind>  or  ... / download
         if len(parts) < 3:
@@ -638,10 +1160,31 @@ class Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"[a-z0-9_-]{1,80}", slug or ""):
             self._send_json(404, {"error": "invalid library name"})
             return
+        folder = self.app.jobs.library / slug
+        if not folder.is_dir():
+            self._send_json(404, {"error": f"no library material {slug}"})
+            return
+
         if len(parts) == 3:
-            folder = self.app.jobs.library / slug
-            if not folder.is_dir():
-                self._send_json(404, {"error": f"no library material {slug}"})
+            if method == "PATCH":
+                payload, error = self._json_body(128 * 1024)
+                if error:
+                    self._send_json(400, {"error": error})
+                    return
+                material = self._json_file(folder / "material.json") or {}
+                job = self._json_file(folder / "job.json") or {}
+                resolutions = material.get("resolutions") or []
+                edge = resolutions[-1] if resolutions else job.get("resolution")
+                payload["resolution_px"] = edge
+                try:
+                    meta = library_mod.update(folder, payload)
+                except PbrForgeError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                self._send_json(200, {"slug": slug, "meta": meta})
+                return
+            if method != "GET":
+                self._send_json(405, {"error": f"method {method} is not supported"})
                 return
             material = self._json_file(folder / "material.json")
             job = self._json_file(folder / "job.json")
@@ -657,13 +1200,19 @@ class Handler(BaseHTTPRequestHandler):
                 "material": material,
                 "job": job,
                 "maps": maps,
+                "meta": library_mod.read(folder),
                 "download": f"/api/library/{slug}/download",
+                "delivery": f"/api/library/{slug}/delivery",
+                "doctor": f"/api/library/{slug}/doctor",
             })
             return
         if len(parts) < 4:
             self._send_json(404, {"error": "no library action in the path"})
             return
         action = parts[3]
+        if action in ("map", "download") and method not in ("GET", "HEAD"):
+            self._send_json(405, {"error": f"use GET for library {action}"})
+            return
         if action == "map" and len(parts) >= 5:
             mpath = self.app.jobs.library_map(slug, parts[4])
             if mpath is None:
@@ -672,12 +1221,58 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(mpath)
             return
         if action == "download":
-            folder = self.app.jobs.library / slug
-            zips = sorted(Path(folder).glob("PBRForge-*.zip")) if folder.is_dir() else []
+            zips = sorted(Path(folder).glob("PBRForge-*.zip"))
             if not zips:
                 self._send_json(404, {"error": "no zip for this material"})
                 return
             self._send_file(zips[0], download=True)
+            return
+        if action == "delivery":
+            if method == "GET":
+                payload = self._json_file(folder / "delivery" / "delivery.json")
+                if payload is None:
+                    self._send_json(404, {"error": "delivery has not been generated yet"})
+                    return
+                self._send_json(200, payload)
+                return
+            if method != "POST":
+                self._send_json(405, {"error": "use POST to generate delivery"})
+                return
+            try:
+                payload = delivery_mod.generate(folder)
+            except PbrForgeError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, payload)
+            return
+        if action == "doctor":
+            if method == "GET":
+                payload = self._json_file(folder / "doctor" / "set-report.json")
+                if payload is not None:
+                    self._send_json(200, payload)
+                    return
+                self._send_json(200, setdoctor.scan(folder).to_dict())
+                return
+            if method != "POST":
+                self._send_json(405, {"error": "use POST to repair a set"})
+                return
+            payload, error = self._json_body(128 * 1024)
+            if error:
+                self._send_json(400, {"error": error})
+                return
+            try:
+                out = folder / f"doctor-{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000:06d}"
+                result = setdoctor.repair(
+                    folder, out,
+                    normal_to=str(payload.get("normal") or ""),
+                    invert=str(payload.get("invert") or ""),
+                    repack=str(payload.get("repack") or ""),
+                    rename=bool(payload.get("rename")),
+                    overwrite=bool(payload.get("overwrite")))
+            except PbrForgeError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
             return
         self._send_json(404, {"error": f"unknown library action {action!r}"})
 
@@ -782,33 +1377,36 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if method == "POST":
+            if not self._same_origin():
+                self._send_json(403, {"error": "cross-origin pairing request refused"})
+                return
             body = self._read_body().decode("utf-8", "replace")
             code = (parse_qs(body).get("code") or [""])[0]
             if self.app.auth.check_pairing_code(code):
                 self.app.auth.note_success(client)
                 cookie = self.app.auth.issue_session()
-                secure = "; Secure" if cfg.tls else ""
                 next_path = (parse_qs(query).get("next") or ["/"])[0]
-                if not next_path.startswith("/"):
+                # Only a local absolute path is a valid post-pair destination.
+                # `//evil.example` would otherwise be an open redirect.
+                if (not next_path.startswith("/") or next_path.startswith("//")
+                        or "\\" in next_path or "\r" in next_path or "\n" in next_path):
                     next_path = "/"
                 self._send(302, b"", "text/plain", extra=[
                     ("Location", next_path),
-                    ("Set-Cookie",
-                     f"{COOKIE_NAME}={cookie}; Path=/; Max-Age={auth_mod.SESSION_DAYS * 86400}; "
-                     f"HttpOnly; SameSite=Lax{secure}"),
+                    ("Set-Cookie", auth_mod.session_cookie(cookie, secure=bool(cfg.tls))),
                 ])
                 print(f"  paired   {client}", flush=True)
                 return
 
             self.app.auth.note_failure(client)
-            page = PAIR_PAGE.replace("__HOST__", local_hostname())
+            page = PAIR_PAGE.replace("__HOST__", local_hostname() or "this PC")
             page = page.replace("__ERROR__",
                                 "<div class='err'>That code did not match. "
                                 "Check the console on the server.</div>")
             self._send(403, page.encode("utf-8"), "text/html; charset=utf-8")
             return
 
-        page = PAIR_PAGE.replace("__HOST__", local_hostname()).replace("__ERROR__", "")
+        page = PAIR_PAGE.replace("__HOST__", local_hostname() or "this PC").replace("__ERROR__", "")
         self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
 
     def _serve_index(self, head_only: bool) -> None:
@@ -887,7 +1485,7 @@ class Server(ThreadingHTTPServer):
 
 
 class RedirectHandler(BaseHTTPRequestHandler):
-    """Plain HTTP -> HTTPS. Clients should never use an insecure origin: WebGPU
+    """Plain HTTP -> HTTPS. Clients should never use an insecure origin: secure-context
     and the clipboard API are gated on a secure context, and `http://192.168.x.x`
     is not one."""
 
@@ -1075,7 +1673,7 @@ def _print_banner(app: App, host: str, port: int) -> None:
     if cfg.tls:
         print(f"    TLS                    on  (http://\u2026 redirects to https://\u2026)")
     else:
-        print("    TLS                    off (LAN clients fall back to WebGL2 rather than WebGPU;")
+        print("    TLS                    off (LAN clients keep WebGL but lose secure-context APIs;")
         print("                           run 'pbrforge tls init' to enable it)")
     if not cfg.library.exists():
         print(f"    note: the library folder does not exist yet; it will be created on first use")

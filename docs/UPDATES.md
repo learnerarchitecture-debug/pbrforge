@@ -1,7 +1,7 @@
-# 🔄 PBRForge updates
+# PBRForge updates
 
 PBRForge uses **GitHub Releases** as its only update channel. There is no background poller, no
-account, no telemetry and no mirror fallback.
+account, no telemetry and no mirror fallback. A check happens only when you ask for it.
 
 ---
 
@@ -14,11 +14,11 @@ account, no telemetry and no mirror fallback.
 | Expected asset selection (`PBRForge-Setup-<version>.exe`) | ✅ |
 | SHA-256 verification when the release publishes a digest | ✅ |
 | Size verification on every download | ✅ |
+| Detached Ed25519 signature verification | ✅ |
+| **Mandatory signature for v2.0+ auto-install** | ✅ |
 | Silent Inno Setup launch | ✅ code path |
 | UI settings (`check`, `auto_install`) persisted to `config.toml` | ✅ |
-| GitHub Release with an installer asset | ✅ `v0.2.0` published |
-| Compiled Windows installer | ✅ built and install/uninstall verified |
-| Install of a **newer** release | ⚠️ not yet exercised; 0.2.0 is current |
+| GitHub Release with a signed installer asset | ✅ from `v2.0.0` |
 
 The check returns a released version or a named failure. It is not allowed to invent an update, and
 it never falls back to an arbitrary executable from the asset list.
@@ -28,7 +28,7 @@ it never falls back to an arbitrary executable from the asset list.
 ## Check
 
 ```powershell
-python -m pbrforge update --check
+python -m pbrforge update
 python -m pbrforge update --check --json
 ```
 
@@ -40,10 +40,51 @@ https://api.github.com/repos/learnerarchitecture-debug/pbrforge/releases/latest
 
 It compares the tag with `pbrforge.__version__` using numeric semantic-version components. The
 result contains current/latest versions, whether an update is available, the selected asset, its
-size, digest (when supplied), release notes, and an honest `error` string on failure.
+size, digest (when supplied), the signature asset when present, release notes, and an honest `error`
+string on failure.
 
 The server caches the result for 24 hours on disk and reuses it for one hour in memory. Opening the
 update dialog shows the cached result; **Check now** forces a fresh request.
+
+---
+
+## Signatures
+
+Every release from `v2.0.0` onward ships:
+
+```text
+PBRForge-Setup-2.0.0.exe
+PBRForge-Setup-2.0.0.exe.sig
+SHA256SUMS.txt
+```
+
+The `.sig` file is a small JSON document produced by:
+
+```powershell
+python -m pbrforge release sign .\PBRForge-Setup-2.0.0.exe `
+  --key .\release-private.pem --output .\PBRForge-Setup-2.0.0.exe.sig
+```
+
+It contains the Ed25519 signature and the SHA-256 of the exact installer bytes. The public key is
+embedded in `pbrforge/update.py` and mirrored in `deploy/release-signing-public.pem`; the private key
+is never part of the repository.
+
+### Verification order
+
+1. Byte size must match the release asset metadata.
+2. SHA-256 must match the release digest when GitHub supplies one.
+3. The detached Ed25519 signature must verify against the embedded public key and the exact bytes.
+
+For versions **2.0.0 and later**, a missing or invalid signature blocks auto-install with a named
+reason:
+
+```text
+why      PBRForge 2.0+ requires a signature before auto-install
+fix      download the installer from the release page and verify SHA256SUMS.txt
+         manually, or ask the publisher to sign the asset
+```
+
+That refusal is deliberate. Unsigned updates are not “verified by HTTPS”; they are refused.
 
 ---
 
@@ -59,17 +100,17 @@ or press **Install update** in the web UI. The install path is deliberately narr
 2. Refuse if the release has no asset named `PBRForge-Setup-<latest>.exe`.
 3. Download to the temp directory through a `.part` file.
 4. Verify the byte count against the release asset size.
-5. Verify SHA-256 when GitHub supplies `digest` (`sha256:<hex>`); otherwise record that no digest was
-   available and rely on the size/HTTPS.
-6. Replace the `.part` file atomically.
-7. Launch:
+5. Verify SHA-256 when GitHub supplies `digest` (`sha256:<hex>`).
+6. Download the `.sig` asset and verify Ed25519 (mandatory for v2.0+).
+7. Replace the `.part` file atomically.
+8. Launch:
 
 ```text
 PBRForge-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
                             /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS
 ```
 
-8. Exit the running server so Windows can replace files. The installer's
+9. Exit the running server so Windows can replace files. The installer's
    `PrepareToInstall` also calls `pbrforge stop` as a second guard.
 
 A silent update does not relaunch the server. Start **PBRForge** from the Start Menu (or let the
@@ -83,36 +124,36 @@ never executed; the error names the expected and received values.
 auto_install = false
 ```
 
-Default is **off**. When enabled, a manual update check that finds a verified installer may launch
-it without another click. There is still no background poller.
+Default is **off**. When enabled, a manual update check that finds a fully verified installer may
+launch it without another click. There is still no background poller, and the signature requirement
+is not relaxed by this setting.
 
 The web dialog writes settings through `POST /api/settings`; the CLI writes the same fields through
 `config --set`. Both rewrite the canonical `config.toml`.
 
 ---
 
-## Release contract (exercised for 0.2.0)
+## Release contract
 
 Publish a GitHub Release whose tag is `v<version>` and attach exactly:
 
 ```text
 PBRForge-Setup-<version>.exe
+PBRForge-Setup-<version>.exe.sig
 SHA256SUMS.txt
 ```
 
-The version inside the asset name must match `pbrforge.__version__` and the tag without the `v`.
-The 0.2.0 installer was verified to:
+The version inside the asset name, the tag and `pbrforge.__version__` must agree. The 0.2.0 installer
+was verified for per-user install without Administrator, silent switches, server stop before file
+replacement, library/config preservation across install/upgrade/uninstall, and a working uninstaller.
+It was **not code-signed** and remains the historical unsigned release.
 
-- install per-user without Administrator;
-- support `/VERYSILENT` and `/SUPPRESSMSGBOXES`;
-- stop the running server before replacing files;
-- preserve the user's library and `config.toml` across install, upgrade and uninstall;
-- register a working uninstaller and remove shortcuts and the uninstall key;
-- leave the server stopped after a silent update (start it from the Start Menu or logon task).
+The `2.0.0` build is exercised again for install, start/ping/stop, packaged selftest, packaged vault
+backup/restore, signature verification and uninstall. It is still **not Authenticode-signed**, so
+SmartScreen warns and the release notes say so. Release signatures protect the updater's chain of
+custody; they do not buy SmartScreen reputation.
 
-The build is **not code-signed**, so SmartScreen warns and the release says so. No later release
-should reuse this tag or replace the 0.2.0 asset with different bytes. See
-[INSTALLATION.md](../INSTALLATION.md) for both install routes.
+See [INSTALLATION.md](../INSTALLATION.md) for both install routes.
 
 ---
 
@@ -126,6 +167,8 @@ should reuse this tag or replace the 0.2.0 asset with different bytes. See
 | Release without installer | Names the expected asset; does not download an arbitrary `.exe` |
 | Truncated download | Refused before execution |
 | Digest mismatch | Refused before execution |
+| Missing signature on v2.0+ | Refused before execution |
+| Signature mismatch | Refused before execution |
 | Non-Windows install | Names the platform limit; no fake success |
 | Failed update | Never deletes the library or config |
 
@@ -133,21 +176,22 @@ should reuse this tag or replace the 0.2.0 asset with different bytes. See
 
 ## CLI output
 
-From the published 0.2.0 release:
+Up to date:
 
 ```text
-  current  0.2.0
-  latest   0.2.0
+  current  2.0.0
+  latest   2.0.0
   status   up to date
 ```
 
-When a newer release exists:
+Update available:
 
 ```text
-  current  0.2.0
-  latest   0.3.0
-  status   update available  ·  PBRForge-Setup-0.3.0.exe
-  release  https://github.com/learnerarchitecture-debug/pbrforge/releases/tag/v0.3.0
+  current  2.0.0
+  latest   2.1.0
+  status   update available  ·  PBRForge-Setup-2.1.0.exe
+  signed   yes
+  release  https://github.com/learnerarchitecture-debug/pbrforge/releases/tag/v2.1.0
 ```
 
 If GitHub returns no release, the status is `no GitHub release exists yet`. That remains a supported
@@ -159,5 +203,5 @@ honest state, not a fake update.
 
 An external updater adds a background service, a second trust boundary and a failure mode that can
 take a working local tool offline. The update surface here is one GET, one expected asset name, one
-size check, one optional digest check and one explicit installer launch. That is small enough to
-inspect completely, which is the point.
+size check, one digest check, one Ed25519 verification and one explicit installer launch. That is
+small enough to inspect completely, which is the point.

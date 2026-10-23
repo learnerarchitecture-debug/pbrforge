@@ -156,7 +156,7 @@ try {
     Write-Host ""
     Write-Host "  Done. To use it:" -ForegroundColor Green
     Write-Host "    .\dist\pbrforge.exe doctor      check this machine"
-    Write-Host "    .\dist\pbrforge.exe tls init    HTTPS so LAN clients get WebGPU"
+    Write-Host "    .\dist\pbrforge.exe tls init    HTTPS for secure-context browser APIs"
     Write-Host "    .\dist\pbrforge.exe serve       start, then open the LAN URL"
     Write-Host ""
     Write-Host "  Or build the installable .exe:  deploy\build-installer.ps1"

@@ -27,10 +27,10 @@
 #  browser also unpairs PBRForge.
 #
 #  Note on HTTPS: if the server has a certificate, use the https:// URL. On a
-#  plain http:// LAN address the browser refuses WebGPU (a LAN IP is not a secure
-#  origin), so the preview falls back to WebGL2. Everything still works; the
-#  preview is just less capable. `pbrforge doctor` on the host says which case
-#  applies, and `pbrforge tls trust` produces the certificate to install here.
+#  plain http:// LAN address the browser withholds secure-context APIs (a LAN IP
+#  is not a secure origin), though the WebGL preview still works. `pbrforge
+#  doctor` on the host says which case applies, and `pbrforge tls trust`
+#  produces the certificate to install here.
 # =============================================================================
 
 [CmdletBinding()]
@@ -166,7 +166,7 @@ if ($Server -like 'https://*') {
     Info "from it (it asks for elevation, which installing a CA root needs)."
     Info ""
     Info "Without a certificate, use the http:// address instead. The preview"
-    Info "drops to WebGL2; nothing else changes."
+    Info "drops to WebGL; nothing else changes."
 }
 
 Write-Host ""

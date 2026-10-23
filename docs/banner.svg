@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title desc">
+  <title id="title">PBRForge — local material studio</title>
+  <desc id="desc">Dark banner with amber, teal and violet gradients. PBRForge 2.0, photo to seamless PBR, encrypted vault, no cloud.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0d10"/>
+      <stop offset="0.55" stop-color="#12161c"/>
+      <stop offset="1" stop-color="#0c1117"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f2be72"/>
+      <stop offset="0.5" stop-color="#e0a458"/>
+      <stop offset="1" stop-color="#c8883c"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6fe3c1"/>
+      <stop offset="1" stop-color="#3da98f"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b69cff"/>
+      <stop offset="1" stop-color="#7c5bd6"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0.18" cy="0.2" r="0.6">
+      <stop offset="0" stop-color="#e0a458" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#e0a458" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0.88" cy="0.85" r="0.65">
+      <stop offset="0" stop-color="#5fd0b2" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#5fd0b2" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="330" rx="22" fill="url(#bg)"/>
+  <rect width="1200" height="330" rx="22" fill="url(#grid)"/>
+  <rect width="1200" height="330" rx="22" fill="url(#glowA)"/>
+  <rect width="1200" height="330" rx="22" fill="url(#glowB)"/>
+  <rect x="1" y="1" width="1198" height="328" rx="21" fill="none" stroke="#ffffff" stroke-opacity="0.10"/>
+
+  <g transform="translate(64 58)">
+    <rect width="52" height="52" rx="12" fill="url(#amber)"/>
+    <path d="M26 11 41 26 26 41 11 26Z" fill="#191108" fill-opacity="0.88"/>
+  </g>
+  <text x="132" y="92" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="46" font-weight="700" fill="#f4f6fa">PBRForge</text>
+  <text x="134" y="121" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="3.2" fill="#8f99a8">LOCAL MATERIAL STUDIO</text>
+
+  <text x="64" y="190" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="29" font-weight="600" fill="#f4f6fa">A photo becomes a finished <tspan fill="url(#amber)">PBR material</tspan>.</text>
+  <text x="64" y="226" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="17" fill="#a9b3c1">Capture, forge, repair, deliver and back up — on this machine. No account, no cloud, no telemetry.</text>
+
+  <g font-family="Segoe UI, Inter, Arial, sans-serif" font-size="13" font-weight="600">
+    <rect x="64" y="258" width="142" height="34" rx="17" fill="#e0a458" fill-opacity="0.13" stroke="#e0a458" stroke-opacity="0.35"/>
+    <text x="135" y="280" text-anchor="middle" fill="#f2be72">v2.0 studio</text>
+    <rect x="218" y="258" width="184" height="34" rx="17" fill="#5fd0b2" fill-opacity="0.10" stroke="#5fd0b2" stroke-opacity="0.30"/>
+    <text x="310" y="280" text-anchor="middle" fill="#6fe3c1">AES-256-GCM vault</text>
+    <rect x="414" y="258" width="170" height="34" rx="17" fill="#b69cff" fill-opacity="0.10" stroke="#b69cff" stroke-opacity="0.30"/>
+    <text x="499" y="280" text-anchor="middle" fill="#c1acff">Ed25519 updates</text>
+    <rect x="596" y="258" width="176" height="34" rx="17" fill="#ffffff" fill-opacity="0.045" stroke="#ffffff" stroke-opacity="0.12"/>
+    <text x="684" y="280" text-anchor="middle" fill="#c4ccd8">20/20 selftest</text>
+  </g>
+
+  <g transform="translate(904 54)" opacity="0.92">
+    <rect width="232" height="222" rx="18" fill="#0f141a" stroke="#ffffff" stroke-opacity="0.10"/>
+    <rect x="18" y="18" width="196" height="118" rx="10" fill="#161d25"/>
+    <path d="M18 88 Q62 50 104 78 T214 60 L214 126 Q160 146 114 126 T18 136 Z" fill="url(#teal)" opacity="0.32"/>
+    <path d="M18 108 Q70 72 120 98 T214 84" fill="none" stroke="url(#amber)" stroke-width="2" opacity="0.85"/>
+    <circle cx="164" cy="62" r="25" fill="url(#amber)" opacity="0.20"/>
+    <circle cx="164" cy="62" r="13" fill="url(#amber)" opacity="0.55"/>
+    <rect x="18" y="154" width="88" height="8" rx="4" fill="#ffffff" fill-opacity="0.18"/>
+    <rect x="18" y="174" width="142" height="8" rx="4" fill="#ffffff" fill-opacity="0.10"/>
+    <rect x="18" y="194" width="62" height="8" rx="4" fill="#5fd0b2" fill-opacity="0.45"/>
+    <rect x="196" y="18" width="18" height="18" rx="5" fill="#e0a458" fill-opacity="0.85"/>
+  </g>
+</svg>

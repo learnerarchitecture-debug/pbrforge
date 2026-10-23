@@ -2,7 +2,7 @@
 ;  pbrforge.iss -- Inno Setup script for PBRForge-Setup-<version>.exe
 ;
 ;  Build with:  deploy\build-installer.ps1
-;  Or directly: iscc installer\pbrforge.iss /DAppVersion=0.2.0
+;  Or directly: iscc installer\pbrforge.iss /DAppVersion=2.0.0
 ;
 ;  Design decisions, in the order they matter:
 ;
@@ -29,7 +29,7 @@
 ; =============================================================================
 
 #ifndef AppVersion
-  #define AppVersion "0.2.0"
+  #define AppVersion "2.0.0"
 #endif
 #ifndef SourceRoot
   ; Default assumes the script sits in <root>\installer\
@@ -94,7 +94,7 @@ Name: "desktopicon";  Description: "Create a &desktop shortcut";                
 Name: "startmenu";    Description: "Create a &Start Menu entry";                      GroupDescription: "Shortcuts:"
 Name: "firewall";     Description: "Open the Windows firewall so other PCs can connect (private networks only)"; GroupDescription: "Networking:"; Flags: unchecked
 Name: "autostart";    Description: "Start the server automatically when I log in";     GroupDescription: "Networking:"; Flags: unchecked
-Name: "tls";          Description: "Create a local HTTPS certificate so LAN previews keep WebGPU"; GroupDescription: "Networking:"
+Name: "tls";          Description: "Create a local HTTPS certificate for secure-context browser APIs"; GroupDescription: "Networking:"
 
 [Files]
 ; The single-file executable: the CLI, the server and the UI all live inside it.
@@ -119,20 +119,22 @@ Source: "{#SourceRoot}\deploy\allow-firewall.cmd";        DestDir: "{app}\deploy
 Source: "{#SourceRoot}\deploy\install-autostart.ps1";     DestDir: "{app}\deploy"; Flags: ignoreversion
 Source: "{#SourceRoot}\deploy\make-client-shortcut.ps1";  DestDir: "{app}\deploy"; Flags: ignoreversion
 Source: "{#SourceRoot}\deploy\install-server.ps1";        DestDir: "{app}\deploy"; Flags: ignoreversion
+Source: "{#SourceRoot}\deploy\release-signing-public.pem"; DestDir: "{app}\deploy"; Flags: ignoreversion
+Source: "{#SourceRoot}\plugins\*";                         DestDir: "{app}\plugins"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__\*,*.pyc"
 Source: "{#SourceRoot}\ui\prototype.html";                DestDir: "{app}\ui";     Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}";                 Filename: "{app}\{#AppExeName}"; Parameters: "serve"; Comment: "Start the server and show the LAN address"; Tasks: startmenu
-Name: "{group}\Doctor (check this PC)";     Filename: "{app}\{#AppExeName}"; Parameters: "doctor"; Comment: "Check Python, ports, TLS and the network";   Tasks: startmenu
+Name: "{group}\{#AppName}";                 Filename: "{app}\{#AppExeName}"; Parameters: "serve"; WorkingDir: "{app}"; Comment: "Start the server and show the LAN address"; Tasks: startmenu
+Name: "{group}\Doctor (check this PC)";     Filename: "{app}\{#AppExeName}"; Parameters: "doctor"; WorkingDir: "{app}"; Comment: "Check the runtime, ports, TLS and the network"; Tasks: startmenu
 Name: "{group}\Open the firewall for LAN access"; Filename: "{app}\deploy\allow-firewall.cmd"; Comment: "Asks for Administrator, opens ports 7788/7443/7789 on private networks"; Tasks: startmenu
 Name: "{group}\Uninstall {#AppName}";       Filename: "{uninstallexe}"; Tasks: startmenu
-Name: "{autodesktop}\{#AppName}";           Filename: "{app}\{#AppExeName}"; Parameters: "serve"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";           Filename: "{app}\{#AppExeName}"; Parameters: "serve"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
 ; 1. TLS. On by default, because TLS here is load-bearing rather than decorative:
-;    browsers grant a secure context -- WebGPU, clipboard, service workers -- only on
-;    https:// or localhost, so without a certificate every LAN client silently falls
-;    back to WebGL2 and the preview is just quietly worse.
+;    browsers grant secure-context APIs -- clipboard, service workers and the like --
+;    only on https:// or localhost, so without a certificate those APIs are withheld
+;    on every LAN client. The WebGL preview itself still works.
 ;
 ;    `tls init` can still fail: it needs either the bundled `cryptography` module or an
 ;    openssl CLI, and a build made on a machine without cryptography landing on a PC
@@ -189,7 +191,7 @@ Filename: "{app}\{#AppExeName}"; Parameters: "stop"; \
 ; pointing at a deleted executable -- which produces a failed task on every
 ; subsequent login and looks like malware.
 Filename: "powershell.exe"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ Stop-ScheduledTask -TaskName 'PBRForge Server' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'PBRForge Server' -Confirm:$false -ErrorAction SilentlyContinue }} catch {{}}"""; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Stop-ScheduledTask -TaskName 'PBRForge Server' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'PBRForge Server' -Confirm:$false -ErrorAction SilentlyContinue"""; \
     Flags: runhidden waituntilterminated; RunOnceId: "RemoveAutostart"
 
 Filename: "powershell.exe"; \

@@ -3,6 +3,10 @@
 The web app is the normal way to use PBRForge. It is a static HTML/JavaScript application served by
 the local Python server, with no build step, no framework and no external assets.
 
+The simple front door is Auto Forge: drop a photo, set a job, forge. A **Studio Lab** section adds
+Capture, Surface Lab, Projects, Set Doctor, Delivery and Vault & audit behind one toggle when you
+want the deeper controls. Both run through the same local worker.
+
 ---
 
 ## Start and stop
@@ -19,6 +23,13 @@ The server prints:
 Open the URL, enter the code once, and the device receives a session cookie. Use `pbrforge stop` from
 any terminal to stop the server. Do not kill the process that appears to own the terminal; the
 lifecycle code tracks the real socket owner.
+
+Writes require a CSRF token. The UI fetches it from `GET /api/session` and sends it with every
+state-changing request. API clients must do the same; a missing or mismatched token is refused with
+`403`. Requests are also rejected when the `Host` header does not match the configured address
+(DNS-rebinding guard) or when a real `Origin` does not match the server. A form post that reports
+`Origin: null` — seen in some privacy-hardened Chromium shells — is accepted only when
+`Sec-Fetch-Site` is not `cross-site`.
 
 | Setting | Default | Effect |
 |---|---:|---|
@@ -99,9 +110,33 @@ final judgement.
 
 ### 5. Library
 
-`GET /api/library` lists finished materials. Each card shows the QC badge, preset, resolution and
-creation time. Clicking a card loads the material detail from disk, so the library survives a server
-restart and a missing in-memory job.
+`GET /api/library` lists finished materials. Each card shows the QC badge, preset, the resolution
+**actually written**, creation time, tags, note, favourite state and derived texel density when a
+physical size is set. Clicking a card loads the material detail from disk, so the library survives a
+server restart and a missing in-memory job.
+
+The **Edit** action writes tags, a note and physical width/height to the sidecar `meta.json`; it does
+not touch generated provenance. Filters cover text, tag, category and favourites. See
+[STUDIO.md](STUDIO.md#library-metadata-and-calibration).
+
+---
+
+## Studio Lab
+
+Studio Lab is progressively disclosed: the Auto Forge flow is unchanged, and the lab stays closed
+until you open it. Each panel has its own status line and refuses unsupported operations with a name.
+
+| Panel | What it does | Honest limit |
+|---|---|---|
+| **Capture stack** | Upload 2–12 PNG frames, merge with median/mean/min/max and optionally forge | No geometric alignment or EXR merge |
+| **Surface Lab** | Generate a tileable procedural source; preview locally; Forge through the pipeline | Direct maps have no metallic map until one exists |
+| **Projects** | Create an ordered layer stack and render it | Ordered stack, not a node graph |
+| **Set Doctor** | Scan or repair a texture set into a new folder | Filename role guesses can be wrong |
+| **Delivery** | Write MaterialX, glTF, USD and Blender files | Not a vendor certification |
+| **Vault & audit** | Encrypted backup/restore and a local security audit | Passphrase loss is permanent |
+
+Full behaviour and limits: [STUDIO.md](STUDIO.md). Vault and signature details:
+[SECURITY.md](SECURITY.md).
 
 ---
 
@@ -147,25 +182,39 @@ The exact filenames and channel packing come from the preset. See
 
 ## HTTP API
 
-The API is same-origin and authenticated by the pairing cookie. Cross-origin uploads, settings
-changes and update installs are refused with `403`.
+The API is same-origin and authenticated by the pairing cookie. State-changing requests also need the
+session-bound CSRF token from `GET /api/session`; cross-origin writes are refused with `403`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/ping` | Liveness and version |
+| `GET` | `/api/ping` | Liveness and version (the only unauthenticated endpoint) |
+| `GET` | `/api/session` | Session state and CSRF token |
 | `GET` | `/api/health` | Server/job health |
 | `GET` | `/api/presets` | Available export presets |
+| `GET` | `/api/security` | Local security audit |
 | `POST` | `/api/jobs?...` | Upload PNG bytes, create a job; `202` with `{job}` |
 | `GET` | `/api/jobs/<id>` | Job record; works after restart via `job.json` |
 | `GET` | `/api/jobs/<id>/map/<kind>` | Preview map (`albedo`, `normal`, …) |
 | `GET` | `/api/jobs/<id>/download` | Result zip |
-| `GET` | `/api/library` | Finished materials |
-| `GET` | `/api/library/<slug>` | Material detail, maps and download link |
+| `POST` | `/api/capture` | Multipart capture stack merge (and optional forge) |
+| `GET`/`POST` | `/api/surface` | Surface preview or Forge |
+| `GET` | `/api/projects` | List material projects |
+| `POST` | `/api/projects` | Create a project |
+| `GET`/`POST` | `/api/projects/<id>` | Show or update a project |
+| `POST` | `/api/projects/<id>/render` | Render a project through the pipeline |
+| `GET` | `/api/projects/<id>/source` | Project source PNG |
+| `POST` | `/api/vault` | Encrypted vault backup (streams the `.pbrvault`) |
+| `GET` | `/api/library` | Finished materials; supports query/tag/category/favorite filters |
+| `GET` | `/api/library/<slug>` | Material detail, maps and links |
+| `PATCH` | `/api/library/<slug>` | Metadata: tags, favourite, note, `size_mm` |
 | `GET` | `/api/library/<slug>/map/<kind>` | Library preview map |
 | `GET` | `/api/library/<slug>/download` | Library zip |
+| `POST` | `/api/library/<slug>/delivery` | Write DCC delivery files |
+| `GET`/`POST` | `/api/library/<slug>/doctor` | Scan or repair a material's texture set |
 | `GET` | `/api/update` | Cached release check; `?check=1` forces one |
-| `POST` | `/api/update/install` | Download and launch the installer |
+| `POST` | `/api/update/install` | Download and launch a verified installer |
 | `POST` | `/api/settings` | Persist `update_check` / `update_auto_install` |
+| `POST` | `/api/logout` | Clear the session cookie |
 
 ### Upload parameters
 
@@ -207,8 +256,9 @@ release notes. It is honest about the three possible states:
 | Release exists, no installer asset | “the latest release has no Windows installer asset” |
 | Update available | Version, asset name, size and **Install update** |
 
-The `v0.2.0` release is published, so a fresh check from this version reports **up to date**. The
+The `v2.0.0` release is published, so a fresh check from this version reports **up to date**. The
 other messages remain the honest result when the API or asset list does not contain what is needed.
+A v2.0+ installer must also carry a valid Ed25519 signature before **Install update** will launch it.
 
 `auto_install = true` means a **manual** check may start the verified installer without another
 click. It does not poll in the background. The default is `false`. See
@@ -225,7 +275,8 @@ click. It does not poll in the background. The default is `false`. See
 | Job fails during ingest | Source is truncated, not actually PNG, or above the configured cap |
 | Result is dark / contrasty | Auto levels was probably enabled; regenerate with it off |
 | Brick mortar is raised | Choose category **Brick** or height **invert** |
-| Update says no release | Correct only if the GitHub API returns none; 0.2.0 is published, so check the repo setting and network |
+| Update says no release | Correct only if the GitHub API returns none; `v2.0.0` is published, so check the repo setting and network |
+| Update refuses to install | Signature missing or mismatched; check `PBRForge-Setup-<version>.exe.sig` on the release |
 | Port already in use | `pbrforge stop`, then `pbrforge serve`; do not kill an unrelated PID |
 
 More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

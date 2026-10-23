@@ -1,10 +1,15 @@
 # Prompts
 
+> **Historical design record, not shipped behaviour.** The 2.0.0 build has no
+> local-AI features and sends no prompts to any model. These texts are kept as
+> development history and as a specification for later work, not as a claim that
+> the features exist. See the status table in [README.md](../README.md).
+
 Two unrelated things share this file name, so both are here:
 
-- **§1 Build prompts** — copy-paste prompts for an AI coding agent to scaffold and implement the
-  project in order. Each one is self-contained and has acceptance criteria.
-- **§2 Runtime prompts** — the actual prompt strings the shipped AI features send to models.
+- **§1 Build prompts** — copy-paste prompts used while developing the project.
+- **§2 Runtime prompts** — proposed prompt strings for a future AI feature; they
+  are not used by 2.0.0.
 
 ---
 
@@ -351,7 +356,8 @@ Non-negotiables:
   - every AI surface is violet, labelled, and has a deterministic alternative beside it
   - progress shows elapsed time, never a fabricated percentage
 
-WebSocket for live progress and thumbnails. WebGPU with a WebGL2 fallback.
+WebSocket for live progress and thumbnails. WebGL preview (WebGPU was a
+proposal, not part of 2.0.0).
 
 Tests: a Playwright smoke test that drops a fixture image, waits for a completed run,
 reads the seam score from the DOM, and exports a pack that passes `presets --check`.

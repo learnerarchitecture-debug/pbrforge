@@ -114,20 +114,13 @@ def run(cfg: Config, *, full: bool = False) -> Report:
     # ------------------------------------------------------------ core stack
     r.add("stdlib server", OK, "http.server / ssl / zlib \u2014 always available")
 
-    # Present modules get their own line; absent ones are collapsed into a single
-    # entry. Listing seven missing packages as seven separate lines buries the
-    # three things that actually matter in this report.
+    # Present modules get their own line.  Only `cryptography` is a real
+    # dependency in 2.0: it backs the vault, release signatures and TLS
+    # certificates.  Nothing else in this list is used by the shipped pipeline,
+    # so doctor must not imply that installing numpy or torch unlocks a feature.
     optional = [
-        ("numpy", "numpy", "the pipeline stages", "pip install numpy"),
-        ("Pillow", "PIL", "image format coverage beyond PNG", "pip install Pillow"),
-        ("libvips", "pyvips", "memory-safe 8k resizing",
-         "see INSTALLATION.md step 3"),
-        ("cryptography", "cryptography", "LAN HTTPS so clients get WebGPU",
-         "pip install cryptography"),
-        ("OpenCV", "cv2", "inpainting and blending",
-         "pip install opencv-contrib-python"),
-        ("PyTorch", "torch", "the optional AI stages",
-         "pip install torch   (large; only for AI features)"),
+        ("cryptography", "cryptography", "vault, release signatures and LAN TLS",
+         "pip install \"cryptography>=42\""),
     ]
     missing: list[str] = []
     for label, import_name, purpose, command in optional:
@@ -141,28 +134,16 @@ def run(cfg: Config, *, full: bool = False) -> Report:
         r.add(f"not installed ({len(missing)})", OPTIONAL,
               ", ".join(m.split(" (")[0] for m in missing),
               "\n         ".join(missing),
-              important=(not full))
+              important=True)
         # The first line of each item is the label; the rest are indented under it
         # by render(), so the advice reads as a list rather than a paragraph.
 
-    gpu_detail = "no GPU stack installed"
-    try:
-        import torch
-        if torch.cuda.is_available():                       # type: ignore[attr-defined]
-            gpu_detail = f"CUDA {torch.version.cuda}  {torch.cuda.get_device_name(0)}"
-        else:
-            gpu_detail = "torch is present but no CUDA device was found"
-    except Exception:      # noqa: BLE001
-        pass
-    r.add("GPU", OK if gpu_detail.startswith("CUDA") else OPTIONAL, gpu_detail,
-          "" if gpu_detail.startswith("CUDA")
-          else "upscaling and inpainting would fall back to CPU")
+    r.add("GPU", OK, "WebGL preview runs in the browser; no Python GPU stack is used",
+          "")
 
-    # openssl is not only for inspection. On an *installed* build -- frozen, and
-    # therefore unable to import cryptography -- it is the certificate
-    # *generation* backend. So look where Git for Windows and OpenSSL actually put
-    # it, not only on PATH, or this line reports a capability as missing that is
-    # sitting in "C:\Program Files\Git\usr\bin" and perfectly usable.
+    # TLS prefers the in-process cryptography backend, but openssl is a real
+    # fallback for source runs and minimal builds. Look where Git for Windows
+    # actually puts it, not only on PATH.
     from .tls import openssl_path
     ossl = openssl_path()
     on_path = shutil.which("openssl")
@@ -173,12 +154,8 @@ def run(cfg: Config, *, full: bool = False) -> Report:
     else:
         r.add("openssl", OPTIONAL,
               "not found, on PATH or in the usual install locations",
-              "optional; LAN HTTPS certificate generation then needs "
-              "'pip install cryptography'", important=True)
-
-    path = shutil.which("ffmpeg")
-    r.add("ffmpeg", OK if path else OPTIONAL, path or "not on PATH",
-          "" if path else "optional, used for video and exotic format conversion")
+              "optional; TLS certificate generation then needs 'cryptography'",
+              important=True)
 
     # ----------------------------------------------------------------- paths
     try:
@@ -274,8 +251,8 @@ def run(cfg: Config, *, full: bool = False) -> Report:
         else:
             r.add("TLS", OK, f"valid for {st.days_left} more days")
     else:
-        r.add("TLS", OPTIONAL, "off \u2014 LAN clients get the WebGL2 preview, not WebGPU",
-              "run 'pbrforge tls init' to enable HTTPS and full GPU features on clients")
+        r.add("TLS", OPTIONAL, "off — LAN clients lose secure-context APIs",
+              "run 'pbrforge tls init' to enable HTTPS for those APIs on clients")
 
     if cfg.auth:
         r.add("Auth", OK, "pairing code required")

@@ -1,0 +1,7 @@
+{
+  "name": "texel-report",
+  "version": "1.0.0",
+  "api": 1,
+  "description": "Write a portable texel-density and map inventory report for a material.",
+  "entry": "plugin.py"
+}

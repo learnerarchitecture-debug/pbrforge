@@ -3,10 +3,10 @@
 How to get PBRForge running on one machine and usable from the others, on a local
 network, without a cloud account and without a degree in PKI.
 
-> **0.2.0 status:** the Windows installer and source deployment are both supported. The installer
-> was exercised for fresh install, in-place reinstall over a running server, packaged autostart and
-> uninstall on Windows 11. Docker and systemd remain documented design routes, not part of that
-> test pass. See section 1.1 and [INSTALLATION.md](INSTALLATION.md).
+> **2.0.0 status:** the Windows installer and source deployment are both supported. The installer
+> was exercised for packaged selftest, vault backup/restore, signature verification, heartbeat/stop,
+> packaged autostart and uninstall on Windows 11. Docker and systemd remain documented design
+> routes, not part of that test pass. See section 1.1 and [INSTALLATION.md](INSTALLATION.md).
 
 This document is the operational half of the project. `README.md` says what
 PBRForge is, `INSTALLATION.md` covers a single developer machine, and this file
@@ -38,18 +38,20 @@ you maintaining N Python installs and N caches, and the caches never agree.
 Model C is better than A *if* the NAS is genuinely always on and you do not mind
 the container caveats in §10.4.
 
-### 1.1 What "serving" means in 0.2.0
+### 1.1 What "serving" means in 2.0.0
 
-The server, web app, job manager and the full 15-stage pipeline are implemented and exercised from
-source. A LAN client can upload a photo, watch the job, inspect and download the resulting material.
-Pairing, HTTPS, discovery and `doctor`/`selftest` are present.
+The server, web app, job manager, the full 15-stage pipeline and the Studio Lab modules are
+implemented and exercised from source. A LAN client can upload a photo, watch the job, inspect and
+download the resulting material, merge a capture stack, generate a procedural surface, edit a
+material project, repair a texture set, write DCC delivery files and manage library metadata.
+Pairing, CSRF/Host hardening, HTTPS, discovery and `doctor`/`selftest` are present.
 
-The **Windows installer was exercised on Windows 11 for the 0.2.0 build**: silent fresh install,
-start/ping/stop, packaged autostart, reinstall while the server was running, and uninstall with config
-preservation. It has not been run on a second machine, and the Docker/systemd routes were not part of
-this pass. Source deployment (this document's paths, config, library and cache split) remains fully
-supported. The implementation status is tracked in `README.md` and `CHANGELOG.md`; when this file and
-those disagree, those win.
+The **Windows installer was exercised on Windows 11 for the 2.0.0 build**: packaged selftest, vault
+backup and restore, signature verification, start/ping/stop, packaged autostart and uninstall with
+config preservation. It has not been run on a second machine, and the Docker/systemd routes were not
+part of this pass. Source deployment (this document's paths, config, library and cache split) remains
+fully supported. The implementation status is tracked in `README.md` and `CHANGELOG.md`; when this
+file and those disagree, those win.
 
 ---
 
@@ -108,7 +110,7 @@ config lives inside the install directory, is a bug report waiting to be filed.
 | Port | Proto | Purpose | Must be open for |
 |---|---|---|---|
 | **7788** | TCP | HTTP — the app and the API | client PCs |
-| **7443** | TCP | HTTPS — same, plus WebGPU on clients | client PCs |
+| **7443** | TCP | HTTPS — same, plus secure-context browser APIs | client PCs |
 | **7789** | UDP | discovery beacon: `pbrforge discover` | optional |
 
 Rules created by `deploy\allow-firewall.cmd` are named `PBRForge TCP 7788`,
@@ -189,7 +191,8 @@ address and the code, which is the entire point of it being a console app:
     Pairing code           K7QM-3XPZ
     Library                C:\Users\you\Documents\PBRForge\library
     Config                 C:\Users\you\AppData\Roaming\pbrforge\config.toml
-    TLS                    off (LAN clients fall back to WebGL2 rather than WebGPU;
+    TLS                    off (the preview is WebGL over both protocols;
+                           HTTPS enables secure-context browser APIs;
                            run 'pbrforge tls init' to enable it)
 
     Ctrl+C to stop
@@ -229,7 +232,7 @@ Prefer **https** and prefer the **stable** address:
 | `https://192.168.1.100:7443` | the host has a static/reserved IP — set a DHCP reservation |
 | `https://hostname.local:7443` | mDNS resolves on your network (common on macOS/iOS, patchy on Windows) |
 | `https://hostname:7443` | the machine is in DNS — add `--host-name` to `tls init` for it |
-| `http://192.168.1.100:7788` | fallback only — costs you WebGPU on clients, see §5.1 |
+| `http://192.168.1.100:7788` | fallback only — secure-context APIs unavailable on clients, see §5.1 |
 
 A DHCP-assigned address will change eventually, and when it does every bookmark
 and every client shortcut breaks at once. The fix is a DHCP reservation on the
@@ -255,23 +258,24 @@ address, so it is not a secure context, and the browser silently withholds:
 
 | API | On `https://192.168.x.x` | On `http://192.168.x.x` |
 |---|---|---|
-| **WebGPU** | available | **unavailable** |
+| **WebGL preview** | available | available |
 | Clipboard write | available | restricted |
 | Service workers (offline, PWA install) | available | unavailable |
-| `navigator.gpu`, GPU-side processing | available | unavailable |
-| WebGL2 | available | available |
+| `navigator.gpu` (not used by this build) | available | unavailable |
 | Canvas, WASM, IndexedDB, the whole app | available | available |
 
-So the tool does not *break* without HTTPS. It quietly becomes a worse version
-of itself on every machine except the host, and — this is the bad part — quietly
-is the operative word. There is no error. The preview just uses WebGL2, and you
-conclude that the LAN is slow.
+So the tool does not *break* without HTTPS. Some browser APIs are withheld, and
+there is no error unless the feature that uses them reports one. The 3D preview
+is WebGL in both cases; the difference is other secure-context capabilities.
+There is no silent GPU downgrade in this build.
 
-The UI's server badge reports this honestly. Hover it in the top bar; on a plain
-HTTP origin the tooltip says so.
+The local security audit (`pbrforge security`) reports TLS state, and the console banner
+does the same. The top-bar server badge identifies the host and library; it does not
+claim a GPU feature.
 
 ```
-  http://192.168.x.x        secure origin required for WebGPU; this page is on http:
+  http://192.168.x.x        secure origin required for clipboard and
+                            service-worker APIs; this page is on http:
 ```
 
 ### 5.2 Create the certificate
@@ -383,18 +387,18 @@ Firefox keeps its own certificate store on Linux and macOS, so it needs
 `about:config` → `security.enterprise_roots.enabled = true` or a manual import via
 Settings → Privacy & Security → Certificates → View Certificates → Authorities.
 If that is more trouble than it is worth, use Chrome or Edge on that machine —
-the WebGPU capability is the same.
+the secure-context behaviour is the same.
 
 ### 5.4 The honest summary
 
 | Situation | Effect | Worth the setup? |
 |---|---|---|
-| Host machine only, `http://127.0.0.1:7788` | loopback *is* a secure context — full WebGPU | nothing to do |
-| LAN clients over plain HTTP | WebGL2 preview; every other feature works | acceptable to start |
-| LAN clients over HTTPS with a trusted CA | full WebGPU everywhere | **yes** — that is what §5.2–5.3 buy you |
+| Host machine only, `http://127.0.0.1:7788` | loopback *is* a secure context — full secure-context APIs | nothing to do |
+| LAN clients over plain HTTP | WebGL preview works; clipboard/service-worker APIs are withheld | acceptable to start |
+| LAN clients over HTTPS with a trusted CA | secure-context APIs available | **yes**, if you need them |
 
-Start on HTTP if you want to. Move to HTTPS the first time you notice the preview
-is doing less on a second machine.
+Start on HTTP if you want to. Move to HTTPS when you need a secure context on a
+second machine, or when you want the transport encrypted on the LAN.
 
 ---
 
@@ -889,7 +893,7 @@ Ordered by how often each one actually happens.
 | Symptom | Most likely cause | Fix |
 |---|---|---|
 | Works on the host, invisible from other PCs | **firewall** | `deploy\allow-firewall.cmd` on the host |
-| Preview is slower or plainer on a client than on the host | no secure context → WebGL2 instead of WebGPU | use `https://`; §5. Hover the server badge in the top bar — it says so |
+| Preview is slower or plainer on a client than on the host | client hardware/browser differs, or a secure-context API is withheld | compare in the same browser; use `https://` if the feature needs a secure context (§5) |
 | Certificate warning on every client visit | the CA is not trusted on that client | `pbrforge tls trust` on the host, run `trust-ca.ps1` on the client (§5.3) |
 | Certificate warning that appeared later, after working | the host's IP changed and the certificate no longer covers it | set a DHCP reservation; `tls init --force`; redeploy the CA |
 | Asked to pair again on every restart | the config directory is not persisted | Docker: mount `/config`. Otherwise check `PBRFORGE_CONFIG_DIR` |
@@ -959,7 +963,7 @@ Print this. Tick it.
 - [ ] `trust-ca.ps1` run, and no certificate warning remains
 - [ ] Paired with the code — once
 - [ ] Server badge in the top bar is **green** and names the host
-- [ ] Badge tooltip does **not** say "secure origin required for WebGPU"
+- [ ] Badge tooltip names the server host and library, not a GPU claim
 - [ ] Shortcut created (`make-client-shortcut.ps1`)
 - [ ] An image round-trips: open, process, export
 

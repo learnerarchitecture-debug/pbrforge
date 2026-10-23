@@ -8,7 +8,7 @@
 #  Usage:
 #      powershell -ExecutionPolicy Bypass -File deploy\build-installer.ps1
 #      ... -SkipPortable     reuse an existing dist\pbrforge.exe
-#      ... -Version 0.2.0    override the version stamped into the file names
+#      ... -Version 2.0.0    override the version stamped into the file names
 #
 #  Inno Setup is not bundled with anything and is not a Python package, so the
 #  script locates it, and if it is missing it says exactly what to install and
@@ -152,8 +152,8 @@ try {
     Write-Host "  dist\pbrforge.exe                           portable, no installer" -ForegroundColor Green
     Write-Host "  dist\PBRForge-Setup-$Version.exe            double-click to install" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  Copy the installer to another PC and run it. The server works with no" -ForegroundColor DarkGray
-    Write-Host "  Python installed; the pipeline stages use one if it is available." -ForegroundColor DarkGray
+    Write-Host "  Copy the installer to another PC and run it. The server and the" -ForegroundColor DarkGray
+    Write-Host "  imaging pipeline run from the bundled executable; no Python is needed." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Not code-signed, so SmartScreen will warn on first run on a new PC:" -ForegroundColor DarkGray
     Write-Host "  More info -> Run anyway. Signing needs a paid certificate and stops" -ForegroundColor DarkGray

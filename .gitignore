@@ -31,3 +31,5 @@ desktop.ini
 *.pem
 *.key
 .env
+# The release verification key is public by design and must ship with the code.
+!deploy/release-signing-public.pem

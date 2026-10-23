@@ -47,10 +47,11 @@ LABEL org.opencontainers.image.title="PBRForge" \
       org.opencontainers.image.licenses="MIT"
 
 # ---------------------------------------------------------------- build args
-# The runtime is stdlib-only. `cryptography` is installed because in the
-# container case HTTPS actually matters: the whole point of a NAS server is LAN
-# clients, and a LAN client on http:// gets no WebGPU. Without a certificate the
-# image would work and the preview would be quietly second-class.
+# The imaging runtime is stdlib-only. `cryptography` is installed because it
+# backs TLS, vaults and update signatures, and in the container case HTTPS
+# matters: the whole point of a NAS server is LAN clients, and a LAN client on
+# http:// loses secure-context APIs. Without a certificate the image still
+# works and the WebGL preview is unaffected.
 #
 # Set WITH_TLS=0 to build the smaller, HTTP-only image.
 ARG WITH_TLS=1

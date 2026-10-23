@@ -32,7 +32,8 @@
 #      https://<nas-ip>:7443         works after installing the CA (see below)
 #
 #  The https URL is the one to prefer: a plain http LAN address is not a secure
-#  origin, so the browser refuses WebGPU and the preview falls back to WebGL2.
+#  origin, so browsers withhold secure-context APIs. The WebGL preview still
+#  works.
 #
 #  INSTALLING THE CERTIFICATE ON A CLIENT
 #      1. docker compose -f deploy/docker-compose.yml exec pbrforge tls trust
@@ -54,10 +55,11 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       args:
-        # 1 = install `cryptography` so HTTPS works. Set to 0 for a smaller,
-        # HTTP-only image (clients then lose WebGPU in the preview).
+        # 1 = install `cryptography` so HTTPS, vaults and signatures work. Set
+        # to 0 for a smaller HTTP-only image (clients then lose secure-context
+        # APIs; the WebGL preview still works).
         WITH_TLS: "1"
-    image: pbrforge:0.1.0
+    image: pbrforge:2.0.0
     container_name: pbrforge
     restart: unless-stopped
 

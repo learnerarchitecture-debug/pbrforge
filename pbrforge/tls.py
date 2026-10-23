@@ -3,13 +3,13 @@
 This is not a nicety. It is load-bearing for the multi-PC setup, because of the
 secure-context rule:
 
-    WebGPU, the async clipboard API and service workers are only available on a
+    The async clipboard API, service workers and some media APIs need a
     SECURE ORIGIN. `http://localhost` counts as secure. `http://192.168.1.100`
     does NOT. There is no flag to override it in a browser.
 
-So a LAN client served over plain HTTP silently loses WebGPU and gets the WebGL2
-fallback. That is survivable -- the preview still works -- but it is a real
-capability loss, and the fix is a certificate the client trusts.
+So a LAN client served over plain HTTP silently loses those APIs and gets the
+WebGL fallback. That is survivable -- the preview still works -- but it is a
+real capability loss, and the fix is a certificate the client trusts.
 
 What we generate:
     ca.key      the local CA private key      (never leaves the server machine)
@@ -26,13 +26,12 @@ Generation uses whichever backend is available, in this order:
     2. the `openssl` CLI -- found on PATH or in the well-known Windows install
                             locations (Git for Windows ships one)
 
-The second backend is not a nicety either. A PyInstaller build is stdlib-only by
-design, and although the spec bundles `cryptography` when the *build machine*
-happens to have it, a build made without it must still be able to generate a
-certificate -- otherwise TLS would be impossible on exactly the deployment the
-feature exists for, and every LAN client would silently lose WebGPU. openssl is
-present on virtually every machine that already has Git, and Git for Windows
-ships it at usr\\bin\\openssl.exe whether or not it is on PATH.
+The second backend is not a nicety either. The release installer bundles
+`cryptography`, but a source checkout or a deliberately minimal build may not
+have it, and TLS must still work -- otherwise every LAN client would silently
+lose secure-context APIs on exactly the deployment the feature exists for.
+openssl is present on virtually every machine that already has Git, and Git for
+Windows ships it at usr\\bin\\openssl.exe whether or not it is on PATH.
 
 If neither backend is available, HTTP still works and `doctor` says why.
 """
@@ -122,8 +121,8 @@ def _load_crypto() -> tuple:
         raise TlsError(
             f"cannot generate certificates: {why}\n"
             f"  fix      {install_hint()}\n"
-            f"  note     HTTPS is optional. Without it LAN clients use the WebGL2 "
-            f"preview instead of WebGPU; everything else works over HTTP."
+            f"  note     HTTPS is optional. Without it LAN clients use the WebGL "
+            f"preview while secure-context APIs stay unavailable; everything else works over HTTP."
         )
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -140,8 +139,8 @@ def openssl_path() -> str | None:
 
     PATH first, then the well-known Windows locations. Git for Windows is the one
     that matters in practice: it ships openssl 3.x at usr\\bin\\openssl.exe, and the
-    machine almost certainly already has Git. That single fact is what lets the
-    packaged, dependency-free build offer HTTPS at all.
+    machine almost certainly already has Git. That fallback lets a packaged build
+    without `cryptography` offer HTTPS at all.
     """
     found = shutil.which("openssl")
     if found:
@@ -336,8 +335,8 @@ def init(cfg: Config, *, force: bool = False, extra_hosts: list[str] | None = No
         f"cannot generate certificates: {why}, and no openssl was found\n"
         f"  fix      pip install cryptography\n"
         f"  or       install Git for Windows (which ships openssl) or OpenSSL itself\n"
-        f"  note     HTTPS is optional. Without it LAN clients use the WebGL2 preview\n"
-        f"           instead of WebGPU; everything else works over plain HTTP."
+        f"  note     HTTPS is optional. Without it LAN clients use the WebGL preview\n"
+        f"           without secure-context APIs; everything else works over plain HTTP."
     )
 
 
@@ -580,14 +579,14 @@ Copy this whole folder to the other PC, then on THAT machine:
 
 Why this is needed
 ------------------
-WebGPU, the clipboard API and service workers only work on a secure origin:
-https, or localhost. Over plain http on a LAN address the browser refuses them,
-and the 3D preview falls back to WebGL2, which is slower and plainer. Trusting
-this CA makes {ip} a secure origin, and you get the full UI.
+The clipboard API, service workers and some media APIs need a secure origin:
+https, or localhost. Over plain http on a LAN address the browser refuses them.
+Trusting this CA makes {ip} a secure origin, and you get the full UI.
 
-Untrusted instead? You lose WebGPU and nothing else. The server also listens on
-{http_url}, and while TLS is on that address redirects to the https one -- so a
-client that skips this step still reaches the tool, just in WebGL2.
+Untrusted instead? You lose those secure-context APIs and nothing else. The
+server also listens on {http_url}, and while TLS is on that address redirects to
+the https one -- so a client that skips this step still reaches the tool, just
+without those APIs.
 
 Where the certificate comes from
 --------------------------------

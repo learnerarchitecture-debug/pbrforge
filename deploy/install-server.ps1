@@ -10,7 +10,7 @@
 #     2. keeps config, the secret and the TLS material OUT of the install
 #        directory, so upgrading never logs out every paired client
 #     3. opens the firewall (private profile only) so other PCs can connect
-#     4. creates the certificate, so LAN clients keep WebGPU
+#     4. creates the certificate, so LAN clients get secure-context browser APIs
 #     5. registers a logon task so the server comes back after a reboot
 #
 #  Usage -- from the repository root, in a normal PowerShell window:
@@ -236,13 +236,13 @@ if ($NoFirewall) {
 # ---------------------------------------------------------------------- 4. TLS
 Head "4. Certificate (HTTPS)"
 if ($NoTls) {
-    Skip "skipped (-NoTls). LAN clients fall back to WebGL2 and lose WebGPU."
+    Skip "skipped (-NoTls). Clients keep the WebGL preview but lose secure-context APIs."
 } else {
     $hasCrypto = & python -c "import cryptography; print(cryptography.__version__)" 2>$null
     if (-not $hasCrypto) {
         Warn "The 'cryptography' package is not installed, so no certificate was made."
-        Say "  Without HTTPS, browsers on other PCs refuse WebGPU because a LAN"
-        Say "  address is not a secure origin. Everything else still works."
+        Say "  Without HTTPS, browsers on other PCs withhold secure-context APIs"
+        Say "  because a LAN address is not a secure origin. Everything else still works."
         Say "  To fix:  python -m pip install cryptography"
         Say "           python -m pbrforge tls init"
     } else {

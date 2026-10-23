@@ -6,6 +6,117 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 While in `0.x`, the pipeline shape may change between minor versions. `pipeline_hash` in each
 `material.json` is the real compatibility marker — a material made at `0.3.1` remains reproducible
 at `0.3.9` because the hash pins the code path, parameters and model versions that produced it.
+From `2.0.0` the Auto Forge pipeline is frozen at 15 stages; studio features are additive and do not
+change existing job records.
+
+---
+
+## [2.0.0] - 2026-10-23
+
+The local studio release. Auto Forge stays the simple front door; a new Studio Lab adds capture,
+procedural surfaces, editable projects, set repair, DCC delivery, library metadata, watch folders,
+plugins, an encrypted vault and signed updates.
+
+### Added
+
+- **Capture stacks** (`pbrforge/capture.py`): merge 2–12 PNG frames with exposure normalisation and
+  `median`, `mean`, `min` or `max`; optional `--forge` through the normal pipeline.
+- **Surface Lab** (`pbrforge/surface.py`): deterministic tileable `brick`, `tile`, `plank`, `panel`,
+  `stone` and `noise` generators with `none`/`dust`/`grime`/`moss`/`wear` weathering, seed, variant,
+  rows/cols, mortar and hue controls. Direct map writer plus server Forge path.
+- **Material projects** (`pbrforge/project.py`): an ordered, non-destructive layer stack with
+  `offset`, `surface`, `weather` and `grade` layers; create/show/update/render/delete; rendering never
+  replaces the source or older library records.
+- **Set Doctor** (`pbrforge/setdoctor.py`): filename-role scan, normal flip (OpenGL/DirectX), gloss/
+  metal inversion, ORM/MRA repack and canonical rename. All repairs are preflighted before any
+  output is created and always write to a new folder.
+- **DCC / interchange delivery** (`pbrforge/delivery.py`): MaterialX (`material.mtlx`), glTF 2.0
+  (`material.gltf` + textures), USD (`material.usda`) and a Blender material script; textures are
+  copied, not re-encoded; missing roles are reported, never invented.
+- **Library metadata** (`pbrforge/library.py`): sidecar `meta.json` with tags, favourites, notes,
+  physical `size_mm` and derived texel density; CLI filters (`--query`, `--tag`, `--favorite`,
+  `--category`) and `PATCH /api/library/<slug>`. Generated `material.json` provenance is untouched.
+- **Watch folders** (`pbrforge/watch.py`): polling watcher with a SHA-256 state file
+  (`.pbrforge-watch.json`); rename-safe, edit-aware, atomic state writes, `--once` and `--recursive`.
+- **Plugins** (`pbrforge/plugins.py`): explicit local Python plugins with a manifest and a small API;
+  `pbrforge plugin list/run`; path-contained and manifest-checked, explicitly **not sandboxed**; the
+  HTTP server never scans or executes them.
+- **Encrypted vault and release signatures** (`pbrforge/security.py`): chunked AES-256-GCM
+  `.pbrvault` backups with scrypt (`n=32768`, `r=8`, `p=1`), authenticated header/chunks and a
+  distinct authenticated end marker; `vault backup/restore/verify/inspect`; Ed25519
+  `release keygen/sign/verify`.
+- **Signed update enforcement** (`pbrforge/update.py`): detached `<asset>.sig` verification; releases
+  `2.0.0+` require a valid signature before auto-install.
+- **Studio Lab UI** (`ui/prototype.html`): Capture, Surface Lab, Projects, Set Doctor, Delivery and
+  Vault & audit panels behind one progressive-disclosure toggle; library metadata editor, filters,
+  favourites and a physical-size/calibration dialog.
+- **Server hardening** (`pbrforge/server/`): session-bound CSRF double-submit tokens, same-origin
+  write checks, Host allowlisting against DNS rebinding, strict session cookies (`HttpOnly`,
+  `SameSite=Strict`, `Max-Age`, `Secure` under TLS), per-client read/write rate limits and security
+  headers.
+- **New CLI commands**: `capture`, `surface`, `project`, `setdoctor`, `deliver`, `watch`, `plugin`,
+  `vault`, `release`, `security`, plus library filters.
+- **Brand and docs:** new `docs/banner.svg`, `docs/STUDIO.md` and `docs/SECURITY.md`.
+
+### Changed
+
+- **Runtime dependency:** `cryptography` is now a required package for vault, signature and TLS
+  operations. The imaging pipeline remains standard-library Python; the documentation and build
+  spec no longer describe the product as having no dependencies.
+- **Library resolution:** the library and texel-density maths now report the resolution actually
+  written in `material.json`, not the requested job resolution. A 256 px surface asked for at
+  1024 px is reported as 256 px.
+- Texel density is displayed with two decimals so small values are not rounded to `0.1`.
+- The Auto Forge hero no longer advertises a stdlib-only build; it advertises the encrypted vault.
+- The server accepts a same-origin form post that reports `Origin: null` when `Sec-Fetch-Site` is not
+  `cross-site`; real cross-site posts remain refused. This fixes pairing in privacy-hardened
+  Chromium shells and proxied form posts.
+
+### Fixed
+
+- **Set Doctor partial output:** a failed repack (for example ORM without a metallic map) previously
+  could leave a half-written folder. All requested actions are now preflighted before the output
+  folder is created.
+- Library card resolution/density mismatch against the real written maps.
+- Dependency comments in `pbrforge/__init__.py`, `pbrforge/tls.py`, `pbrforge/update.py`,
+  `pbrforge/selftest.py`, `pbrforge/server/simple.py` and `deploy/pbrforge.spec` that still claimed a
+  stdlib-only build.
+
+### Security
+
+- CSRF tokens are session-bound and required for every state-changing API request.
+- Session cookies are `HttpOnly`, `SameSite=Strict` and `Secure` when TLS is enabled.
+- `Host` rebinding is blocked; cross-origin writes are rejected.
+- Vault decryption refuses tampered or truncated data with a named error and no cipher fallback.
+- v2.0+ auto-install refuses an unsigned or mismatched release.
+
+### Verified
+
+- `python -m pbrforge selftest -v`: **20/20**.
+- `python -m compileall -q pbrforge`: clean.
+- CLI: surface direct maps, capture, Set Doctor missing-map refusal and complete-map repair,
+  delivery, project create/show/render, library metadata/filtering and plugin execution.
+- Auth-enabled API: pairing/cookie flags, CSRF absence/foreign-Origin/bad-Host refusals, settings,
+  upload/job completion, library metadata PATCH/filtering, Surface preview/submit, capture, project
+  create/patch/render, doctor scan/repair, delivery, encrypted vault backup/restore (1,748,179 bytes,
+  3 authenticated chunks, 121 entries; 146 files restored).
+- Browser: pairing, Studio Lab Surface Forge, library metadata editor and texel-density display.
+- Packaged portable build: `selftest` **20/20**, including a full vault backup/restore round trip;
+  signed installer verification accepted the real key and refused a one-byte tamper.
+- Packaged installer on Windows 11: silent install, installed `selftest` 20/20, encrypted backup via
+  the packaged API, ping/stop, autostart registration, reinstall over a running server, and silent
+  uninstall that removed the app and scheduled task while preserving config and library.
+
+### Deferred — explicitly not shipped
+
+- **EXR / float image IO** — PNG only; no OpenEXR support is claimed.
+- **Local AI** — no model download, inference runtime or prompt-to-texture feature.
+- **True 3D calibration** — no model import, UV solving, baking or texel painting.
+- **Plugin sandbox** — plugins are trusted local code run explicitly.
+- **Cloud sync, accounts, collaboration and telemetry** — out of scope.
+- **Vendor certification** — interchange files are structurally tested, not certified in every DCC.
+- **CSP inline scripts** — the single-file UI still requires `'unsafe-inline'` for scripts and
+  styles; documented as a trade-off in `docs/SECURITY.md`.
 
 ---
 
@@ -289,8 +400,8 @@ been done. Every one of them passed review and failed on execution.
   and `url`.
 
 These last ones were found by running `pbrforge tls` for the first time. The TLS *design* was
-load-bearing — LAN clients only get WebGPU on a secure origin — but no command in the group had ever
-been executed, so all four defects sat behind a green build.
+load-bearing — LAN clients only get secure-context browser APIs on a secure origin — but no command
+in the group had ever been executed, so all four defects sat behind a green build.
 
 - **`tls status` raised `AttributeError` and `tls init` crashed after doing its work.**
   `get_values_for_type(x509.DNSName)` returns plain strings, not objects with a `.value`; the code

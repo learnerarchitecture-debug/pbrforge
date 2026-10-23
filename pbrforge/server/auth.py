@@ -152,6 +152,18 @@ class Auth:
         expected = hmac.new(self._secret, f"{expiry}".encode(), hashlib.sha256).hexdigest()[:32]
         return hmac.compare_digest(sig, expected)
 
+    # ------------------------------------------------------------------- csrf
+    def csrf_token(self, session: str) -> str:
+        """A session-bound double-submit token, readable only by same-origin JS."""
+        digest = hmac.new(self._secret, b"pbrforge/csrf/" + session.encode(),
+                          hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+    def verify_csrf(self, session: str | None, token: str | None) -> bool:
+        if not session or not token:
+            return False
+        return hmac.compare_digest(self.csrf_token(session), token)
+
     # ----------------------------------------------------------------- utils
     @staticmethod
     def parse_cookie(header: str | None) -> dict[str, str]:
@@ -161,6 +173,21 @@ class Auth:
                 k, _, v = part.partition("=")
                 out[k.strip()] = v.strip()
         return out
+
+
+def session_cookie(value: str, *, secure: bool,
+                   max_age: int = SESSION_DAYS * 86400) -> str:
+    """One cookie policy, used for both pair and logout.
+
+    HttpOnly keeps it out of JavaScript; SameSite=Strict keeps it off
+    cross-site requests; Secure is only added when the origin is actually TLS,
+    because a Secure cookie on plain HTTP would silently never be stored.
+    """
+    parts = [f"{COOKIE_NAME}={value}", "Path=/", f"Max-Age={max_age}",
+             "HttpOnly", "SameSite=Strict"]
+    if secure:
+        parts.append("Secure")
+    return "; ".join(parts)
 
 
 AUTH_EXEMPT = {
